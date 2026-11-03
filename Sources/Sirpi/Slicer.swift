@@ -145,6 +145,25 @@ final class Slicer {
             process["flush_into_infill"] = "1"
             process["flush_into_support"] = "1"
         }
+        // Multi-colour prints need a wipe tower. The CLI's auto-arrange doesn't keep it clear of large models
+        // ("gcode path conflicts found between WipeTower and assemble_1"), so place both ourselves.
+        var layout: WipeTowerLayout.Plan?
+        var towerNote: String?
+        if parts.count > 1, let bounds = WipeTowerLayout.bounds(of: parts.map(\.stl)) {
+            let plate = PrinterProfile.current
+            let brim = Double(process["prime_tower_brim_width"] as? String ?? "") ?? 3
+            let width = Double(process["prime_tower_width"] as? String ?? "") ?? 35
+            if let plan = WipeTowerLayout.plan(model: bounds, plateX: plate.x, plateY: plate.y,
+                                              towerWidth: width, brim: brim, colours: parts.count) {
+                layout = plan
+                process["wipe_tower_x"] = [String(format: "%.1f", plan.towerX)]
+                process["wipe_tower_y"] = [String(format: "%.1f", plan.towerY)]
+            } else {
+                // No room beside the model: purge into infill only. Colour changes still work, with more blending.
+                process["enable_prime_tower"] = "0"
+                towerNote = "No room for a wipe tower beside this model, so colour changes purge into infill instead."
+            }
+        }
 
         func write(_ obj: Any, _ name: String) throws -> URL {
             let u = work.appendingPathComponent(name)
@@ -160,9 +179,11 @@ final class Slicer {
             f["filament_colour"] = [part.hex]
             filamentFiles.append(try write(f, "filament_\(i + 1).json").path)
             objects.append(["path": part.stl.path, "count": 1, "filaments": [i + 1], "assemble_index": [1],
-                            "pos_x": [0], "pos_y": [0], "pos_z": [0]])
+                            "pos_x": [layout?.shiftX ?? 0], "pos_y": [layout?.shiftY ?? 0], "pos_z": [0]])
         }
-        let assemble = try write(["plates": [["plate_name": "", "need_arrange": true, "objects": objects]]], "assemble.json")
+        let arrange = parts.count == 1
+        let assemble = try write(["plates": [["plate_name": "", "need_arrange": arrange, "objects": objects]]], "assemble.json")
+        if let towerNote { status = towerNote }
 
         let out = outDir.appendingPathComponent(outName)
         for u in [out, outDir.appendingPathComponent("plate_1.gcode"), outDir.appendingPathComponent("plate_1.png"),
@@ -262,5 +283,77 @@ final class Slicer {
         guard let d = try? Data(contentsOf: asset.sliceInfoURL) else { return nil }
         let dec = JSONDecoder(); dec.dateDecodingStrategy = .iso8601
         return try? dec.decode(SliceResult.self, from: d)
+    }
+}
+
+
+// MARK: - Wipe tower placement
+
+/// Finds a free spot on the plate for the wipe tower next to a multi-colour model, moving the model if needed.
+enum WipeTowerLayout {
+    struct Bounds { var minX, minY, maxX, maxY: Double }
+    /// `shiftX/Y` move the model (mm, added to its STL coordinates); `towerX/Y` is the tower's front-left corner.
+    struct Plan: Equatable { var shiftX, shiftY, towerX, towerY: Double }
+
+    static let edge = 5.0, gap = 10.0
+
+    /// Footprint of the tower (Bambu sizes its depth from the purge volume per colour change), including brim.
+    static func footprint(width: Double, brim: Double, colours: Int) -> (w: Double, d: Double) {
+        (width + 2 * brim, min(70, 18 + 9 * Double(max(1, colours - 1))) + 2 * brim)
+    }
+
+    static func plan(model b: Bounds, plateX: Double, plateY: Double, towerWidth: Double, brim: Double, colours: Int) -> Plan? {
+        let (tw, td) = footprint(width: towerWidth, brim: brim, colours: colours)
+        func clamp(_ v: Double, _ lo: Double, _ hi: Double) -> Double { max(lo, min(hi, v)) }
+        // Try each side as it is, then with the model pushed to the far edge to open up that side.
+        for shift in [false, true] {
+            // Front (low y)
+            var dy = shift ? (plateY - edge) - b.maxY : 0
+            if b.minY + dy - gap - edge >= td {
+                let x = clamp((b.minX + b.maxX) / 2 - tw / 2, edge, plateX - edge - tw)
+                return Plan(shiftX: 0, shiftY: dy, towerX: x + brim, towerY: edge + brim)
+            }
+            // Back (high y)
+            dy = shift ? edge - b.minY : 0
+            if plateY - edge - (b.maxY + dy) - gap >= td {
+                let x = clamp((b.minX + b.maxX) / 2 - tw / 2, edge, plateX - edge - tw)
+                return Plan(shiftX: 0, shiftY: dy, towerX: x + brim, towerY: b.maxY + dy + gap + brim)
+            }
+            // Left (low x)
+            var dx = shift ? (plateX - edge) - b.maxX : 0
+            if b.minX + dx - gap - edge >= tw {
+                let y = clamp((b.minY + b.maxY) / 2 - td / 2, edge, plateY - edge - td)
+                return Plan(shiftX: dx, shiftY: 0, towerX: edge + brim, towerY: y + brim)
+            }
+            // Right (high x)
+            dx = shift ? edge - b.minX : 0
+            if plateX - edge - (b.maxX + dx) - gap >= tw {
+                let y = clamp((b.minY + b.maxY) / 2 - td / 2, edge, plateY - edge - td)
+                return Plan(shiftX: dx, shiftY: 0, towerX: b.maxX + dx + gap + brim, towerY: y + brim)
+            }
+        }
+        return nil
+    }
+
+    /// Combined XY bounds of binary STL files.
+    static func bounds(of urls: [URL]) -> Bounds? {
+        var b = Bounds(minX: .infinity, minY: .infinity, maxX: -.infinity, maxY: -.infinity)
+        for url in urls {
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), data.count >= 84 else { continue }
+            data.withUnsafeBytes { raw in
+                let n = Int(raw.loadUnaligned(fromByteOffset: 80, as: UInt32.self))
+                guard data.count >= 84 + n * 50 else { return }
+                for i in 0..<n {
+                    let base = 84 + i * 50 + 12
+                    for v in 0..<3 {
+                        let x = Double(raw.loadUnaligned(fromByteOffset: base + v * 12, as: Float32.self))
+                        let y = Double(raw.loadUnaligned(fromByteOffset: base + v * 12 + 4, as: Float32.self))
+                        b.minX = min(b.minX, x); b.maxX = max(b.maxX, x)
+                        b.minY = min(b.minY, y); b.maxY = max(b.maxY, y)
+                    }
+                }
+            }
+        }
+        return b.minX.isFinite ? b : nil
     }
 }

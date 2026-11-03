@@ -17,6 +17,12 @@ struct Asset: Codable, Identifiable, Hashable {
     var hasReference: Bool? = nil
     /// "game" or "print" (nil for older assets: game).
     var purpose: String? = nil
+    /// Extra context sent with the first request: the answers to the follow-up questions and, for prints, the printer.
+    /// Later versions inherit it so fixes and refinements keep honouring it.
+    var brief: String? = nil
+
+    /// The request as the model first saw it.
+    var fullRequest: String { brief.map { prompt + "\n\n" + $0 } ?? prompt }
 
     var dir: URL { Paths.library.appendingPathComponent(id, isDirectory: true) }
     var htmlURL: URL { dir.appendingPathComponent("asset.html") }
@@ -85,11 +91,12 @@ final class AssetLibrary {
 
     @discardableResult
     func create(prompt: String, html: String, parent: Asset?, refinement: String?, seconds: Double, tokens: Int, engine: String? = nil,
-                reference: Data? = nil, purpose: String? = nil) throws -> Asset {
+                reference: Data? = nil, purpose: String? = nil, brief: String? = nil) throws -> Asset {
         var a = Asset(id: UUID().uuidString.lowercased(), prompt: parent?.prompt ?? prompt, created: Date(),
                       parentId: parent?.id, refinement: refinement, genSeconds: seconds, tokens: tokens)
         a.engine = engine
         a.purpose = purpose
+        a.brief = brief ?? parent?.brief
         try FileManager.default.createDirectory(at: a.dir, withIntermediateDirectories: true)
         if let reference {
             try? reference.write(to: a.referenceURL)
@@ -109,6 +116,7 @@ final class AssetLibrary {
         a.imported = true
         a.engine = parent.engine
         a.purpose = parent.purpose
+        a.brief = parent.brief
         try FileManager.default.createDirectory(at: a.dir, withIntermediateDirectories: true)
         try glb.write(to: a.glbURL)
         let viewer = try String(contentsOf: Paths.web.appendingPathComponent("viewer.html"), encoding: .utf8)

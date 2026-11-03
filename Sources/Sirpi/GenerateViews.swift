@@ -537,6 +537,10 @@ struct AssetInspector: View {
                 VStack(alignment: .leading, spacing: 0) {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(asset.refinement.map { "Refined: \($0)" } ?? asset.prompt).font(.headline).fixedSize(horizontal: false, vertical: true)
+                        if let details = asset.brief?.components(separatedBy: "Details from the user:\n").dropFirst().first {
+                            Text(details).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                .help("Your answers to the follow-up questions; fixes and refinements keep them.")
+                        }
                         if let s = asset.genSeconds {
                             Text("Generated in \(formatDuration(s))\(asset.tokens.map { " from \($0.formatted()) tokens" } ?? "")")
                                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

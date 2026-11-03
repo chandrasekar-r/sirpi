@@ -290,7 +290,7 @@ final class AppModel {
             }
             library.write(sheet.jpeg, to: asset.comparisonURL)
             tasks.update(task, detail: "Asking \(VisualCheck.checker?.0.name ?? "a vision model") what differs")
-            let verdict = try await VisualCheck.critique(sheet: sheet, prompt: asset.prompt,
+            let verdict = try await VisualCheck.critique(sheet: sheet, prompt: asset.fullRequest,
                                                          purpose: AssetPurpose(rawValue: asset.purpose ?? "") ?? .game)
             guard verdict.needsRefinement else {
                 tasks.finish(task, success: true, title: "\(asset.shortTitle) matches the picture",
@@ -393,14 +393,18 @@ final class AppModel {
             web.onMessage = { m in
                 guard !done, m["type"] as? String == "glbTool", m["requestId"] as? String == id else { return }
                 done = true
-                if let err = m["error"] as? String { cont.resume(throwing: ForgeError("GLB processing failed: \(err.prefix(300))")) }
+                if let err = m["error"] as? String {
+                    // Show the message itself, not the JS stack.
+                    let first = err.components(separatedBy: "\n").first ?? err
+                    cont.resume(throwing: ForgeError(first.replacingOccurrences(of: "Error: ", with: "").prefix(300).description))
+                }
                 else { cont.resume(returning: m) }
             }
             Task {
                 let url = "forge://lib/\(a.id)/asset.glb?t=\(Date().timeIntervalSince1970)"
                 await web.eval("window.glbTool('\(url)', \(ops), '\(id)'); true")
-                try? await Task.sleep(for: .seconds(180))
-                if !done { done = true; cont.resume(throwing: ForgeError("GLB processing timed out.")) }
+                try? await Task.sleep(for: .seconds(300))
+                if !done { done = true; cont.resume(throwing: ForgeError("GLB processing took more than 5 minutes and was stopped.")) }
             }
         }
         guard let b64 = result["data"] as? String, let data = Data(base64Encoded: b64) else { throw ForgeError("No file came back.") }

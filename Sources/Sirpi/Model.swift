@@ -241,6 +241,8 @@ final class Generator {
     /// Engine a continuation will use.
     var continueProvider: Provider? { last.map { Providers.find($0.providerID) } }
     private var last: Request?
+    /// Context of a new asset, saved with it (refinements inherit their parent's).
+    private var briefToSave: String?
     private weak var lastLibrary: AssetLibrary?
 
     /// A stopped or cut-off answer that can be continued instead of starting over.
@@ -291,7 +293,7 @@ final class Generator {
         var messages: [[String: String]] = [["role": "system", "content": purpose.system]]
         // Imported GLBs show a generic viewer page; there is no generated code to patch.
         if let base, let refinement, base.imported != true, let html = try? String(contentsOf: base.htmlURL, encoding: .utf8) {
-            messages.append(["role": "user", "content": base.prompt])
+            messages.append(["role": "user", "content": base.fullRequest])
             messages.append(["role": "assistant", "content": "```html\n\(html)\n```"])
             let patch = Patch.enabled && !fullRewrite
             mode = patch ? .patch : .rewrite
@@ -304,6 +306,7 @@ final class Generator {
         }
         reference = image
         self.attachment = attachment
+        briefToSave = base == nil ? context : nil
         last = Request(messages: messages, prompt: prompt, base: base, refinement: refinement, image: image,
                        attachment: attachment, context: context, purpose: purpose, onDone: onDone,
                        providerID: ProviderSettings.selected.id)
@@ -530,7 +533,7 @@ final class Generator {
         do {
             let a = try library.create(prompt: prompt, html: html, parent: base, refinement: refinement,
                                        seconds: elapsed, tokens: tokens, engine: engineLabel, reference: reference?.jpeg,
-                                       purpose: purpose.rawValue)
+                                       purpose: purpose.rawValue, brief: briefToSave)
             phase = .done
             onDone(a)
         } catch {

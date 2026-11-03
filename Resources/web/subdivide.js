@@ -183,6 +183,11 @@ export function enhanceScene(root, opts = {}) {
   const tri = (g) => (g.index ? g.index.count : g.attributes.position.count) / 3;
   let projected = 0;
   for (const m of meshes) projected += tri(m.geometry) * 4 ** levels;
+  const base = projected / 4 ** levels;
+  if (base * 4 > budget) {
+    // Even one level would pass the budget (and take minutes): stop now with a clear reason.
+    throw new Error(`This asset already has ${Math.round(base).toLocaleString('en')} triangles, so smoothing it would pass the ${budget.toLocaleString('en')} limit. It already has fine detail.`);
+  }
   const lv = projected > budget ? Math.max(1, levels - Math.ceil(Math.log(projected / budget) / Math.log(4))) : levels;
 
   for (const m of meshes) {
