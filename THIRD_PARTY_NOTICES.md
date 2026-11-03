@@ -24,6 +24,12 @@ Sirpi is MIT licensed (see `LICENSE`). It bundles or uses the following, each un
 | [ccore/Qwen3.5-4B-GLB-3D-Coder](https://huggingface.co/ccore/Qwen3.5-4B-GLB-3D-Coder) | Apache-2.0 | Fine-tune of [Qwen/Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) (Apache-2.0). `tools/model/` converts it to MLX. |
 | [NVIDIA SimReady assets](https://huggingface.co/datasets/nvidia/simready-assets) | CC-BY-4.0 | Imported on demand. Credit NVIDIA when you use them. |
 
+## Adapted guidance
+
+| Source | Licence | Where |
+|---|---|---|
+| [scenario-labs/skills](https://github.com/scenario-labs/skills) (Blender hard-surface and game-asset skills), Copyright (c) Scenario | MIT | Condensed into the modelling craft rules in `Sources/Sirpi/Providers.swift` (`RemotePrompt.craft`) |
+
 ## Tools used at runtime if installed
 
 Bambu Studio (slicing), Blender (export), Pixar OpenUSD `usd-core` (SimReady conversion), and coding-agent CLIs such as Claude Code, opencode, Grok CLI and Kimi Code. These are separate programs under their own licences and terms.

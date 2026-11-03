@@ -108,10 +108,10 @@ private struct GenerationPane: View {
                 Text("Follow-up questions are written by the fastest signed-in model (Claude Code with Haiku first). Thinking roughly doubles generation time; for the Claude API it switches between high and low effort.")
             }
             Section {
-                Toggle("Compare with the reference picture and refine once", isOn: $pictureCheck)
+                Toggle("Review each new asset and fix what's off", isOn: $pictureCheck)
                 Toggle("Apply fixes and refinements as small edits", isOn: $patchFixes)
             } footer: {
-                Text("After an asset made from a picture, Sirpi renders it from four sides, asks a vision model what differs from the picture, and sends the fixes back as one refinement. Skipped when it already scores 8/10 or better. Small edits change only the lines that need it, so a fix takes seconds instead of rewriting the whole file; if an edit doesn't match the code, Sirpi rewrites the file instead.")
+                Text("After each new asset, Sirpi renders it from four sides and asks a vision model to check it against your request, your answers to the follow-up questions and, if you attached one, the picture. Anything that falls short goes back as one quick fix; assets that score 8/10 or better are left alone. Needs Claude Code or a cloud API key for the vision check. Small edits change only the lines that need it, so a fix takes seconds instead of rewriting the whole file; if an edit doesn't match the code, Sirpi rewrites the file instead.")
             }
             Section("Cloud and agent output") {
                 LabeledContent("Max output tokens") {

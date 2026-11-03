@@ -198,6 +198,28 @@ enum RemotePrompt {
     - Do not use tools, read or write files, or run commands.
     """
 
+    /// Modelling craft for general models, distilled for three.js from Scenario's MIT-licensed Blender hard-surface and
+    /// game-asset skills (github.com/scenario-labs/skills). Not sent to the local 3D Coder: long prompts hurt that model.
+    static let craft = """
+
+    Modelling craft:
+    - Silhouette first: get the big masses and proportions right before adding detail, and make the object read \
+    clearly from the front, side and three-quarter views.
+    - Edges catch light: bevel hard edges (RoundedBoxGeometry, ExtrudeGeometry with bevelEnabled, chamfered \
+    LatheGeometry profiles). Leave an edge razor-sharp only when the object really is.
+    - Curves look smooth, flat faces stay flat: flatShading false on curved parts, enough segments that round \
+    silhouettes never look faceted (32+ radial segments on visible cylinders and spheres), and computeVertexNormals() \
+    on hand-built geometry.
+    - Parts connect: every part touches or slightly overlaps what it attaches to, with no floating gaps, and decals or \
+    panels sit 0.001 to 0.002 units proud of the surface below them so nothing flickers.
+    - Three levels of form: large shapes, then medium (trims, straps, panels), then small (rivets, seams, grooves) \
+    only where they read at a normal camera distance.
+    - Materials read as materials: distinct roughness and metalness per material, a harmonised palette of 3 to 6 \
+    colours, no pure black or pure white, and emissive only for things that really glow.
+    - Real-world proportions, front facing +Z, every mesh named after its part (e.g. "Blade", "Handle"), related \
+    parts grouped, geometries and materials reused, and under about 150,000 triangles unless asked for more.
+    """
+
     static var printRules: String {
         rules.replacingOccurrences(of: "\n    - Rest the asset on y = 0, centred on the origin, about 1 to 2 units tall, with soft lights and a dark ground plane.", with: "")
             .replacingOccurrences(of: "- Rest the asset on y = 0, centred on the origin, about 1 to 2 units tall, with soft lights and a dark ground plane.\n", with: "")
@@ -213,11 +235,11 @@ enum RemotePrompt {
         if purpose == .print { return printSystemPrompt + printRules }
         if purpose == .scene {
             let base = DetailLevel.current == .lowPoly ? sceneSystemPrompt : sceneSystemPrompt + " Make it richly detailed."
-            return base + sceneRules
+            return base + sceneRules + craft
         }
         let base = DetailLevel.current == .lowPoly ? systemPrompt
             : systemPrompt.replacingOccurrences(of: "good-quality low-poly asset", with: "high-quality, finely detailed asset")
-        return base + rules
+        return base + rules + craft
     }
 
     static var system: String { system(for: AssetPurpose.current) }

@@ -360,6 +360,9 @@ final class Generator {
         engineLabel = ProviderSettings.label(provider)
         var messages = messages
         var nativeImage: ReferenceImage?
+        if reference == nil, let attachment, provider.seesImages, mode != .continuation {
+            nativeImage = attachment // e.g. the review renders, for engines that can see them
+        }
         if let image = reference, mode != .continuation {
             if provider.seesImages {
                 nativeImage = attachment ?? image

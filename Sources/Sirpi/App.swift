@@ -257,24 +257,26 @@ final class AppModel {
         generator.generate(prompt: prompt, base: base, refinement: refinement, image: image, attachment: attachment,
                            context: context, library: library) { [weak self] asset in
             guard let self else { return }
-            // A new picture-guided asset gets compared with its picture once, and refined if it differs.
-            let check = image != nil && refinement == nil && VisualCheck.enabled
+            // Each new asset is reviewed once (against its picture, if it has one) and fixed if it falls short.
+            let check = refinement == nil && VisualCheck.enabled
             if self.selectedAssetID == nil { self.selectedAssetID = asset.id }
             if let id = self.generateTaskID {
                 self.tasks.finish(id, success: true, title: "\(asset.shortTitle) is ready",
                                   detail: "Generated in \(formatDuration(asset.genSeconds ?? 0)). Open it to refine it or prepare it for print.")
                 if let i = self.tasks.tasks.firstIndex(where: { $0.id == id }) { self.tasks.tasks[i].assetID = asset.id }
             }
-            if check { Task { await self.checkAgainstPicture(asset) } }
+            if check { Task { await self.reviewAsset(asset) } }
         }
     }
 
-    /// Renders `asset` from four sides beside its reference picture, has a vision model list the differences, and starts
-    /// one refinement with them unless it already matches.
-    func checkAgainstPicture(_ asset: Asset) async {
-        guard asset.has(asset.referenceURL), let reference = ReferenceImage(url: asset.referenceURL) else { return }
-        let task = tasks.start(.generate, title: "Comparing \(asset.shortTitle) with the picture", detail: "Rendering four views",
-                               assetID: asset.id, stage: .generate)
+    /// Reviews a new asset once: renders it from four sides (beside its reference picture, if it has one), has a vision
+    /// model check it against the request and the follow-up answers, and starts one quick fix if it falls short.
+    func reviewAsset(_ asset: Asset) async {
+        guard VisualCheck.checker != nil, asset.imported != true else { return } // no vision model available: skip quietly
+        let reference = asset.has(asset.referenceURL) ? ReferenceImage(url: asset.referenceURL) : nil
+        let name = asset.shortTitle
+        let task = tasks.start(.generate, title: reference != nil ? "Comparing \(name) with the picture" : "Reviewing \(name)",
+                               detail: "Rendering four views", assetID: asset.id, stage: .generate)
         do {
             if !asset.has(asset.glbURL) {
                 tasks.update(task, detail: "Exporting GLB")
@@ -284,33 +286,34 @@ final class AppModel {
                 web.load(URL(string: "about:blank")!)
                 tasks.update(task, detail: "Rendering four views")
             }
-            let (jpeg, _) = try await runGLBTool(asset, ops: "{ views: { reference: 'forge://lib/\(asset.id)/reference.jpg', cell: 384 } }")
+            let ref = reference != nil ? "'forge://lib/\(asset.id)/reference.jpg'" : "null"
+            let (jpeg, _) = try await runGLBTool(asset, ops: "{ views: { reference: \(ref), cell: 384 } }")
             guard let img = NSImage(data: jpeg), let sheet = ReferenceImage(image: img, maxSide: 1536) else {
                 throw ForgeError("The renders could not be read.")
             }
             library.write(sheet.jpeg, to: asset.comparisonURL)
-            tasks.update(task, detail: "Asking \(VisualCheck.checker?.0.name ?? "a vision model") what differs")
+            tasks.update(task, detail: "Asking \(VisualCheck.checker?.0.name ?? "a vision model") to check it")
             let verdict = try await VisualCheck.critique(sheet: sheet, prompt: asset.fullRequest,
-                                                         purpose: AssetPurpose(rawValue: asset.purpose ?? "") ?? .game)
+                                                         purpose: AssetPurpose(rawValue: asset.purpose ?? "") ?? .game,
+                                                         hasReference: reference != nil)
             guard verdict.needsRefinement else {
-                tasks.finish(task, success: true, title: "\(asset.shortTitle) matches the picture",
+                tasks.finish(task, success: true, title: reference != nil ? "\(name) matches the picture" : "\(name) passed review",
                              detail: "\(verdict.checker) scored it \(verdict.score)/10.", thumb: asset.thumbURL)
                 return
             }
             guard engineReady, !generator.isRunning, brief == nil else {
-                tasks.finish(task, success: true, title: "\(asset.shortTitle) scored \(verdict.score)/10",
-                             detail: "Not refined because another generation is running. Fixes: " + verdict.fixes.prefix(3).joined(separator: "; "))
+                tasks.finish(task, success: true, title: "\(name) scored \(verdict.score)/10",
+                             detail: "Not fixed because another generation is running. Suggested: " + verdict.fixes.prefix(3).joined(separator: "; "))
                 return
             }
-            tasks.finish(task, success: true, title: "Refining \(asset.shortTitle) to match the picture",
-                         detail: "\(verdict.checker) scored it \(verdict.score)/10 and found \(verdict.fixes.count) difference\(verdict.fixes.count == 1 ? "" : "s").")
+            tasks.finish(task, success: true, title: "Fixing \(name) after review",
+                         detail: "\(verdict.checker) scored it \(verdict.score)/10 and found \(verdict.fixes.count) issue\(verdict.fixes.count == 1 ? "" : "s").")
             let follow = selectedAssetID == asset.id
             startGeneration(prompt: asset.prompt, base: asset, refinement: verdict.refinement, image: reference,
-                            attachment: sheet, title: "Matching \(asset.shortTitle) to the picture")
+                            attachment: sheet, title: reference != nil ? "Matching \(name) to the picture" : "Fixing \(name) after review")
             if follow { selectedAssetID = nil; stage = .generate }
         } catch {
-            tasks.finish(task, success: false, title: "Could not compare \(asset.shortTitle) with the picture",
-                         detail: error.localizedDescription)
+            tasks.finish(task, success: false, title: "Could not review \(name)", detail: error.localizedDescription)
         }
     }
 

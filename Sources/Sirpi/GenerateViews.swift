@@ -536,7 +536,9 @@ struct AssetInspector: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     VStack(alignment: .leading, spacing: 4) {
-                        Text(asset.refinement.map { "Refined: \($0)" } ?? asset.prompt).font(.headline).fixedSize(horizontal: false, vertical: true)
+                        Text(asset.refinement.map { "Refined: \($0)" } ?? asset.prompt).font(.headline)
+                            .lineLimit(4).fixedSize(horizontal: false, vertical: true)
+                            .help(asset.refinement ?? asset.prompt)
                         if let details = asset.brief?.components(separatedBy: "Details from the user:\n").dropFirst().first {
                             Text(details).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                                 .help("Your answers to the follow-up questions; fixes and refinements keep them.")
@@ -625,6 +627,16 @@ struct AssetInspector: View {
                         }
                         if app.prep.assetID == asset.id && app.prep.triangles > 0 {
                             KeyValueRow(key: "Triangles", value: app.prep.triangles.formatted())
+                        }
+                        if asset.imported != true {
+                            Button { Task { await app.reviewAsset(asset) } } label: {
+                                Label("Review and fix", systemImage: "eye").frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .buttonStyle(.glass)
+                            .disabled(VisualCheck.checker == nil || app.generator.isRunning)
+                            .help(VisualCheck.checker == nil
+                                  ? "Needs Claude Code or a cloud API key that can see pictures"
+                                  : "Renders the asset from four sides, checks it against your request with a vision model, and fixes what falls short")
                         }
                     }
 
