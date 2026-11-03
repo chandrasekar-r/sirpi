@@ -1,4 +1,4 @@
-"""Batched generation with mlx-lm, using the same ChatML prompt AssetForge builds.
+"""Batched generation with mlx-lm, using the same ChatML prompt Sirpi builds.
 
 usage: gen.py --model DIR --prompts FILE.jsonl --out DIR [--samples N] [--batch B] [--thinking 0|1]
               [--max-tokens N] [--temp T] [--only ID,ID] [--adapter DIR]

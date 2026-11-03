@@ -86,6 +86,13 @@ final class AppModel {
     var enhancing = false
     /// Headless page that subdivides GLBs (created on first use).
     @ObservationIgnored private var enhanceWeb: WebController?
+    /// Offscreen page that exports GLBs for the picture check without touching the visible preview.
+    @ObservationIgnored private var checkWeb: WebController?
+    /// Offscreen turntable renderer (turntable.html).
+    @ObservationIgnored private var turntableWeb: WebController?
+    @ObservationIgnored private var turntableBusy = false
+    /// Asset whose turntable export sheet is open.
+    var turntableAsset: Asset?
     var refineFocusToken = 0
     var showPrintSheet = false
     var confirmStopPrint = false
@@ -243,19 +250,67 @@ final class AppModel {
     }
 
     private func startGeneration(prompt: String, base: Asset?, refinement: String?, image: ReferenceImage? = nil,
-                                 context: String? = nil) {
-        let title = refinement.map { _ in "Refining \(base?.shortTitle ?? "asset")" } ?? prompt
+                                 attachment: ReferenceImage? = nil, context: String? = nil, title: String? = nil) {
+        let title = title ?? refinement.map { _ in "Refining \(base?.shortTitle ?? "asset")" } ?? prompt
         generateTaskID = tasks.start(.generate, title: title, detail: "Waiting for model", stage: .generate,
                                      cancel: { [weak self] in self?.generator.cancel() })
-        generator.generate(prompt: prompt, base: base, refinement: refinement, image: image, context: context,
-                           library: library) { [weak self] asset in
+        generator.generate(prompt: prompt, base: base, refinement: refinement, image: image, attachment: attachment,
+                           context: context, library: library) { [weak self] asset in
             guard let self else { return }
+            // A new picture-guided asset gets compared with its picture once, and refined if it differs.
+            let check = image != nil && refinement == nil && VisualCheck.enabled
             if self.selectedAssetID == nil { self.selectedAssetID = asset.id }
             if let id = self.generateTaskID {
                 self.tasks.finish(id, success: true, title: "\(asset.shortTitle) is ready",
                                   detail: "Generated in \(formatDuration(asset.genSeconds ?? 0)). Open it to refine it or prepare it for print.")
                 if let i = self.tasks.tasks.firstIndex(where: { $0.id == id }) { self.tasks.tasks[i].assetID = asset.id }
             }
+            if check { Task { await self.checkAgainstPicture(asset) } }
+        }
+    }
+
+    /// Renders `asset` from four sides beside its reference picture, has a vision model list the differences, and starts
+    /// one refinement with them unless it already matches.
+    func checkAgainstPicture(_ asset: Asset) async {
+        guard asset.has(asset.referenceURL), let reference = ReferenceImage(url: asset.referenceURL) else { return }
+        let task = tasks.start(.generate, title: "Comparing \(asset.shortTitle) with the picture", detail: "Rendering four views",
+                               assetID: asset.id, stage: .generate)
+        do {
+            if !asset.has(asset.glbURL) {
+                tasks.update(task, detail: "Exporting GLB")
+                let web = checkWeb ?? WebController(injectBridge: true)
+                checkWeb = web
+                library.write(try await GLBExtractor.extract(using: web, asset: asset), to: asset.glbURL)
+                web.load(URL(string: "about:blank")!)
+                tasks.update(task, detail: "Rendering four views")
+            }
+            let (jpeg, _) = try await runGLBTool(asset, ops: "{ views: { reference: 'forge://lib/\(asset.id)/reference.jpg', cell: 384 } }")
+            guard let img = NSImage(data: jpeg), let sheet = ReferenceImage(image: img, maxSide: 1536) else {
+                throw ForgeError("The renders could not be read.")
+            }
+            library.write(sheet.jpeg, to: asset.comparisonURL)
+            tasks.update(task, detail: "Asking \(VisualCheck.checker?.0.name ?? "a vision model") what differs")
+            let verdict = try await VisualCheck.critique(sheet: sheet, prompt: asset.prompt,
+                                                         purpose: AssetPurpose(rawValue: asset.purpose ?? "") ?? .game)
+            guard verdict.needsRefinement else {
+                tasks.finish(task, success: true, title: "\(asset.shortTitle) matches the picture",
+                             detail: "\(verdict.checker) scored it \(verdict.score)/10.", thumb: asset.thumbURL)
+                return
+            }
+            guard engineReady, !generator.isRunning, brief == nil else {
+                tasks.finish(task, success: true, title: "\(asset.shortTitle) scored \(verdict.score)/10",
+                             detail: "Not refined because another generation is running. Fixes: " + verdict.fixes.prefix(3).joined(separator: "; "))
+                return
+            }
+            tasks.finish(task, success: true, title: "Refining \(asset.shortTitle) to match the picture",
+                         detail: "\(verdict.checker) scored it \(verdict.score)/10 and found \(verdict.fixes.count) difference\(verdict.fixes.count == 1 ? "" : "s").")
+            let follow = selectedAssetID == asset.id
+            startGeneration(prompt: asset.prompt, base: asset, refinement: verdict.refinement, image: reference,
+                            attachment: sheet, title: "Matching \(asset.shortTitle) to the picture")
+            if follow { selectedAssetID = nil; stage = .generate }
+        } catch {
+            tasks.finish(task, success: false, title: "Could not compare \(asset.shortTitle) with the picture",
+                         detail: error.localizedDescription)
         }
     }
 
@@ -263,10 +318,31 @@ final class AppModel {
     func generationEnded() {
         guard let id = generateTaskID else { return }
         switch generator.phase {
-        case .failed(let m): tasks.finish(id, success: false, detail: m)
+        case .failed(let m):
+            tasks.finish(id, success: false, detail: m,
+                         retry: generator.canContinue ? { [weak self] in self?.continueGeneration() } : nil,
+                         retryTitle: generator.canContinue ? "Continue" : nil)
         case .cancelled: tasks.remove(id)
         default: break
         }
+    }
+
+    /// The engine that wrote the partial answer is available (the local model must be loaded; others are always on).
+    var canContinueNow: Bool {
+        guard let p = generator.continueProvider else { return false }
+        return p.kind == .local ? (provider.kind == .local && engineReady) : true
+    }
+
+    /// Picks up a stopped or cut-off generation where it ended instead of starting again.
+    func continueGeneration() {
+        guard generator.canContinue, canContinueNow, !generator.isRunning else { return }
+        let partialTokens = generator.codeTokens
+        generateTaskID = tasks.start(.generate, title: "Continuing \(generator.shortTitle)",
+                                     detail: "Picking up after \(partialTokens.formatted()) tokens", stage: .generate,
+                                     cancel: { [weak self] in self?.generator.cancel() })
+        selectedAssetID = nil
+        stage = .generate
+        generator.continueLast()
     }
 
     func stopGenerating() { generator.cancel(); generationEnded() }
@@ -508,6 +584,92 @@ final class AppModel {
     }
 
     /// OBJ with material colours baked into vertex colours (three.js r187 OBJExporter), for tools without GLB support.
+    // MARK: turntable video
+
+    private func turntablePage() async throws -> WebController {
+        if let w = turntableWeb { return w }
+        let web = WebController(injectBridge: false)
+        var ready = false
+        web.onMessage = { m in if m["type"] as? String == "turntableReady" { ready = true } }
+        web.load(URL(string: "forge://app/turntable.html")!)
+        for _ in 0..<100 where !ready { try await Task.sleep(for: .milliseconds(100)) }
+        guard ready else { throw ForgeError("The turntable renderer did not start.") }
+        turntableWeb = web
+        return web
+    }
+
+    private static func decodeFrame(_ value: Any?) -> CGImage? {
+        guard let s = value as? String, let comma = s.firstIndex(of: ","),
+              let data = Data(base64Encoded: String(s[s.index(after: comma)...])),
+              let src = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(src, 0, nil)
+    }
+
+    /// First frame at preview size for the export sheet.
+    func turntablePreview(_ a: Asset, options o: TurntableOptions) async throws -> NSImage? {
+        guard !turntableBusy else { return nil }
+        turntableBusy = true
+        defer { turntableBusy = false }
+        try await ensureGLB(a)
+        let web = try await turntablePage()
+        _ = try await web.evalThrowing("window.turntableSetup('forge://lib/\(a.id)/asset.glb?t=\(a.id)', \(o.js(maxSide: 640)))")
+        guard let cg = Self.decodeFrame(try await web.evalThrowing("window.turntableFrame(0)")) else {
+            throw ForgeError("The renderer returned no picture.")
+        }
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+    }
+
+    /// Renders a seamless 360° turntable of `a` and encodes it to MP4 (or HEVC-with-alpha MOV).
+    func exportTurntable(_ a: Asset, options o: TurntableOptions) async {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [o.fileType]
+        panel.nameFieldStringValue = "\(a.fileStem)-turntable.\(o.fileExtension)"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        for _ in 0..<50 where turntableBusy { try? await Task.sleep(for: .milliseconds(100)) }
+        turntableBusy = true
+        defer { turntableBusy = false }
+        var cancelled = false
+        let total = o.frames
+        let task = tasks.start(.download, title: "Turntable video of \(a.shortTitle)", detail: "Preparing",
+                               assetID: a.id, stage: .generate, cancel: { cancelled = true })
+        var encoder: TurntableEncoder?
+        do {
+            try await ensureGLB(a)
+            let web = try await turntablePage()
+            _ = try await web.evalThrowing("window.turntableSetup('forge://lib/\(a.id)/asset.glb?t=\(Date().timeIntervalSince1970)', \(o.js))")
+            let (w, h) = o.resolution.size
+            let enc = try TurntableEncoder(url: url, width: w, height: h, fps: o.fps, alpha: o.transparent)
+            encoder = enc
+            let perTurn = max(2, total / max(1, o.loops))
+            let started = Date()
+            for i in 0..<total {
+                if cancelled { throw CancellationError() }
+                guard let frame = Self.decodeFrame(try await web.evalThrowing("window.turntableFrame(\(i % perTurn))")) else {
+                    throw ForgeError("Frame \(i + 1) could not be rendered.")
+                }
+                try await enc.append(frame, index: i)
+                if i % 6 == 0 || i == total - 1 {
+                    let done = Double(i + 1) / Double(total)
+                    let left = Date().timeIntervalSince(started) / done * (1 - done)
+                    tasks.update(task, detail: "Frame \(i + 1) of \(total) · about \(formatDuration(left)) left", progress: done)
+                }
+            }
+            tasks.update(task, detail: "Finishing the file")
+            try await enc.finish()
+            _ = await web.eval("window.turntableDispose()")
+            let mb = ((try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) / 1_000_000
+            tasks.finish(task, success: true, title: "Turntable video saved",
+                         detail: "\(url.lastPathComponent) · \(o.resolution.title), \(Int(o.seconds)) s, \(mb) MB", thumb: a.thumbURL)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            encoder?.cancel()
+            try? FileManager.default.removeItem(at: url)
+            _ = await turntableWeb?.eval("window.turntableDispose()")
+            if error is CancellationError { tasks.remove(task); return }
+            tasks.finish(task, success: false, title: "Could not make the turntable video", detail: error.localizedDescription)
+        }
+    }
+
     func exportOBJ() async {
         guard let a = selectedAsset else { return }
         do {
@@ -623,7 +785,8 @@ struct RootView: View {
                 .navigationTitle(app.selectedAsset?.shortTitle ?? (app.generator.isRunning ? app.generator.shortTitle : "New asset"))
         }
         .toolbar {
-            ToolbarItem(placement: .principal) { StagePicker() }
+            // Computed here so the toolbar closure itself depends on the width and is rebuilt when it changes.
+            ToolbarItem(placement: .principal) { StagePicker(compact: app.windowWidth < 1140).id(app.windowWidth < 1140) }
             ToolbarItem(placement: .primaryAction) { TasksButton() }
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -635,11 +798,11 @@ struct RootView: View {
             }
         }
         .overlay(alignment: .bottom) { ToastView().padding(.bottom, 72) } // clears the viewport toolbars
-        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { w in
+        .background(WindowWidthReader { w in
             // Quantised so live resizing doesn't re-render the toolbar on every point.
             let q = (w / 20).rounded() * 20
             if q != app.windowWidth { app.windowWidth = q }
-        }
+        })
         .alert("Something went wrong", isPresented: Binding(get: { app.alert != nil }, set: { if !$0 { app.alert = nil } })) {
             Button("OK") {}
         } message: { Text(app.alert ?? "") }
@@ -648,6 +811,7 @@ struct RootView: View {
         } message: { Text("This cancels the job. It cannot be resumed.") }
         .sheet(isPresented: $app.showPrintSheet) { PrintSheet() }
         .sheet(isPresented: $app.showSimReady) { SimReadyBrowser(intoScene: app.simReadyIntoScene) }
+        .sheet(item: $app.turntableAsset) { TurntableSheet(asset: $0) }
         .onChange(of: app.printer.status.trays) { _, _ in app.pushPalette() }
         .onChange(of: app.generator.phase) { _, p in
             if case .failed = p { app.generationEnded() }
@@ -655,13 +819,40 @@ struct RootView: View {
     }
 }
 
+/// Reports the hosting NSWindow's real width. SwiftUI geometry inside a NavigationSplitView did not track window
+/// resizes reliably, which left the toolbar picker at full width in narrow windows.
+struct WindowWidthReader: NSViewRepresentable {
+    let onChange: (CGFloat) -> Void
+    func makeNSView(context: Context) -> NSView {
+        let v = Probe(); v.onChange = onChange; return v
+    }
+    func updateNSView(_ nsView: NSView, context: Context) { (nsView as? Probe)?.onChange = onChange }
+
+    final class Probe: NSView {
+        var onChange: ((CGFloat) -> Void)?
+        private var token: NSObjectProtocol?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let token { NotificationCenter.default.removeObserver(token) }
+            guard let window else { return }
+            token = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] n in
+                guard let w = (n.object as? NSWindow)?.frame.width else { return }
+                MainActor.assumeIsolated { self?.onChange?(w) }
+            }
+            let w = window.frame.width
+            DispatchQueue.main.async { [weak self] in self?.onChange?(w) }
+        }
+        deinit { if let token { NotificationCenter.default.removeObserver(token) } }
+    }
+}
+
 struct StagePicker: View {
     @Environment(AppModel.self) private var app
+    let compact: Bool
     var body: some View {
         // The picker sits over the middle column. With titles it is ~320 pt wide, which no longer fits once
         // the window narrows with both sidebars open, and an unfittable toolbar item loops AppKit's
         // constraint pass (crash). Below 1060 pt it drops to icons (~170 pt); the titles stay in tooltips.
-        let compact = app.windowWidth < 1060
         Picker("Stage", selection: Binding(get: { app.stage }, set: { app.go($0) })) {
             ForEach(Stage.allCases) { s in
                 Group {
@@ -709,15 +900,18 @@ struct DetailWithInspector: View {
     @AppStorage("inspectorWidth") private var storedWidth: Double = 300
     @State private var dragStart: Double?
     @State private var hoverEdge = false
+    /// True while the inspector is hidden only because the window got too narrow; it returns when there is room.
+    @State private var autoHidden = false
 
     static let range: ClosedRange<Double> = 240...480
-    static let minViewport: Double = 300
+    static let minViewport: Double = 460
 
     var body: some View {
         GeometryReader { geo in
             let total = Double(geo.size.width)
             // Too narrow for side by side: the inspector floats over the viewport instead of crushing it.
-            let floating = total < Self.minViewport + Self.range.lowerBound
+            // A zero width comes from the first layout pass, before the window has a size; don't treat it as narrow.
+            let floating = total > 1 && total < Self.minViewport + Self.range.lowerBound
             let w = app.showInspector ? (floating ? min(storedWidth, total * 0.88) : Self.fit(storedWidth, total: total)) : 0
             ZStack(alignment: .trailing) {
                 HStack(spacing: 0) {
@@ -735,6 +929,13 @@ struct DetailWithInspector: View {
                         .transition(.move(edge: .trailing).combined(with: .opacity))
                 }
             }
+            // Entering the narrow layout hides the inspector so it doesn't cover the stage; it can still be opened
+            // on demand as an overlay.
+            .onChange(of: floating, initial: true) { _, now in
+                if now && app.showInspector { app.showInspector = false; autoHidden = true }
+                else if !now && autoHidden { autoHidden = false; withAnimation(.snappy(duration: 0.25)) { app.showInspector = true } }
+            }
+            .onChange(of: app.showInspector) { _, shown in if shown { autoHidden = false } }
         }
     }
 
@@ -1077,7 +1278,7 @@ struct TaskRow: View {
             Button { cancel(); if task.kind == .generate { app.generationEnded() } } label: { Image(systemName: "xmark") }
                 .buttonStyle(.borderless).help("Stop")
         } else if task.state == .failed, let retry = task.retry {
-            Button("Retry") { retry() }.controlSize(.small)
+            Button(task.retryTitle ?? "Retry") { retry() }.controlSize(.small)
         } else if task.kind == .print && task.state == .running {
             Button("Show") { open() }.controlSize(.small)
         }

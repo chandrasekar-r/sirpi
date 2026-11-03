@@ -1,0 +1,128 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Turntable</title>
+<script type="importmap">
+{ "imports": {
+  "three": "forge://app/vendor/three/build/three.module.js",
+  "three/addons/": "forge://app/vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body style="margin:0;background:transparent">
+<script type="module">
+// Headless turntable renderer. Swift calls turntableSetup(url, opts) once, then pulls frames one at a time with
+// turntableFrame(i), each a data URL (JPEG, or PNG when the background is transparent).
+//   opts: { width, height, frames, elevation (deg), background ('#rrggbb' | null for transparent),
+//           lighting ('studio' | 'soft' | 'dramatic'), direction (1 clockwise seen from above, -1 counter),
+//           floor (bool: soft contact shadow), zoom (1 = framed, >1 closer) }
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+let state = null;
+const post = (m) => { try { window.webkit.messageHandlers.forge.postMessage(m); } catch (_) {} };
+
+function lights(scene, kind) {
+  const add = (l, p) => { if (p) l.position.set(...p); scene.add(l); return l; };
+  if (kind === 'soft') {
+    scene.environmentIntensity = 0.9;
+    add(new THREE.HemisphereLight(0xffffff, 0x8a8f99, 1.1));
+    add(new THREE.DirectionalLight(0xffffff, 0.6), [2, 5, 3]);
+  } else if (kind === 'dramatic') {
+    scene.environmentIntensity = 0.25;
+    add(new THREE.HemisphereLight(0xb8c4ff, 0x101015, 0.25));
+    const key = add(new THREE.DirectionalLight(0xfff1dc, 2.6), [4, 5, 2]);
+    key.castShadow = true;
+    add(new THREE.DirectionalLight(0x9fc2ff, 1.6), [-4, 2, -4]); // rim
+  } else { // studio
+    scene.environmentIntensity = 0.6;
+    add(new THREE.HemisphereLight(0xffffff, 0x444444, 0.9));
+    const key = add(new THREE.DirectionalLight(0xffffff, 1.4), [3, 6, 4]);
+    key.castShadow = true;
+    add(new THREE.DirectionalLight(0xffffff, 0.45), [-4, 3, -2]); // fill
+  }
+}
+
+window.turntableSetup = async (url, opts = {}) => {
+  const o = Object.assign({ width: 1280, height: 720, frames: 120, elevation: 18, background: '#1d1f22',
+                            lighting: 'studio', direction: 1, floor: true, zoom: 1 }, opts);
+  if (state) { state.renderer.dispose(); state = null; }
+  const transparent = !o.background;
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: transparent, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(1);
+  renderer.setSize(o.width, o.height, false);
+  renderer.toneMapping = THREE.NeutralToneMapping;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  if (transparent) renderer.setClearColor(0x000000, 0);
+
+  const scene = new THREE.Scene();
+  if (!transparent) scene.background = new THREE.Color(o.background);
+  scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+  lights(scene, o.lighting);
+
+  const gltf = await new GLTFLoader().loadAsync(url);
+  const model = gltf.scene;
+  model.traverse((m) => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } });
+  // Centre on the turntable axis with the base on y = 0.
+  const box = new THREE.Box3().setFromObject(model);
+  const size = box.getSize(new THREE.Vector3()), centre = box.getCenter(new THREE.Vector3());
+  const pivot = new THREE.Group();
+  model.position.sub(new THREE.Vector3(centre.x, box.min.y, centre.z));
+  pivot.add(model);
+  scene.add(pivot);
+
+  if (o.floor) {
+    const r = Math.max(size.x, size.z) * 1.6 + size.y * 0.5;
+    const floor = new THREE.Mesh(new THREE.CircleGeometry(r, 64), new THREE.ShadowMaterial({ opacity: transparent ? 0.35 : 0.28 }));
+    floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+    scene.add(floor);
+  }
+  scene.traverse((l) => {
+    if (l.isDirectionalLight && l.castShadow) {
+      const s = Math.max(size.x, size.y, size.z) * 1.5;
+      Object.assign(l.shadow.camera, { left: -s, right: s, top: s, bottom: -s, near: 0.01, far: s * 20 });
+      l.position.multiplyScalar(Math.max(size.x, size.y, size.z));
+      l.shadow.mapSize.set(2048, 2048); l.shadow.bias = -0.0005; l.shadow.normalBias = 0.02;
+    }
+  });
+
+  // Frame the bounding sphere so no part leaves the picture at any angle.
+  const aspect = o.width / o.height, fov = 30;
+  const camera = new THREE.PerspectiveCamera(fov, aspect, 0.01, 1000);
+  const radius = Math.max(1e-6, Math.hypot(size.x / 2, size.y / 2, size.z / 2));
+  const vHalf = THREE.MathUtils.degToRad(fov / 2), hHalf = Math.atan(Math.tan(vHalf) * aspect);
+  const dist = radius / Math.sin(Math.min(vHalf, hHalf)) * 1.08 / o.zoom;
+  const el = THREE.MathUtils.degToRad(o.elevation);
+  const target = new THREE.Vector3(0, size.y / 2, 0);
+  const near = Math.max(0.001, dist - radius * 2), far = dist + radius * 4;
+  camera.near = near; camera.far = far;
+  camera.position.set(0, target.y + Math.sin(el) * dist, Math.cos(el) * dist);
+  camera.lookAt(target);
+  camera.updateProjectionMatrix();
+
+  state = { renderer, scene, camera, pivot, o, transparent };
+  return { triangles: countTriangles(model), width: o.width, height: o.height, frames: o.frames };
+};
+
+function countTriangles(root) {
+  let n = 0;
+  root.traverse((m) => { if (m.isMesh && m.geometry) n += (m.geometry.index ? m.geometry.index.count : m.geometry.attributes.position.count) / 3; });
+  return Math.round(n);
+}
+
+// Frame i of a seamless loop: frame `frames` would equal frame 0, so it is never rendered.
+window.turntableFrame = (i) => {
+  const { renderer, scene, camera, pivot, o, transparent } = state;
+  pivot.rotation.y = -o.direction * (i / o.frames) * Math.PI * 2;
+  renderer.render(scene, camera);
+  return transparent ? renderer.domElement.toDataURL('image/png') : renderer.domElement.toDataURL('image/jpeg', 0.95);
+};
+
+window.turntableDispose = () => { if (state) { state.renderer.dispose(); state = null; } return true; };
+post({ type: 'turntableReady' });
+</script>
+</body>
+</html>

@@ -26,8 +26,11 @@ Runs a fine-tuned model on your Mac's GPU, or the coding agents and AI services 
 - **Or bring your own model.** Coding-agent CLIs you are already signed in to (Claude Code, opencode, Grok CLI, Kimi Code, Cursor Agent, Codex, Gemini CLI, pi) are detected automatically and use their own logins. Cloud APIs (Claude, OpenAI, Gemini, xAI, Cloudflare Workers AI, OpenRouter, Groq, DeepSeek, Mistral) and local servers (Ollama, LM Studio) work with a key or URL.
 - **Customise.** Select objects in a scene, move, rotate and scale them with a gizmo, recolour materials, duplicate, delete, and insert assets from your library. Every change is a new version.
 - **Real-world assets.** Browse and import the 2,677 [NVIDIA SimReady](https://huggingface.co/datasets/nvidia/simready-assets) assets (OpenUSD with PBR materials), converted to GLB on demand.
+- **Matches your picture.** After an asset made from a picture, Sirpi renders it from four sides next to the picture, asks a vision model what differs, and refines it once automatically.
+- **Fast fixes.** Fixes and refinements come back as small edits to the existing code instead of a whole new file, so fixing a script error takes seconds. A generation that was stopped or cut off can be continued from where it ended.
 - **Detail on demand.** *Smooth & add detail* subdivides meshes so curves become smooth while sharp edges stay crisp.
 - **Print on a Bambu Lab printer.** Prepare repairs meshes into watertight solids, matches colours to your AMS, slices with Bambu Studio and sends the job over the local network (LAN mode).
+- **Turntable videos.** Render a seamless 360° video of any asset: 720p to 4K, square or vertical, studio, soft or dramatic lighting, and a transparent background (HEVC with alpha) for trailers and editors.
 - **Export anywhere.** GLB (optionally with lightmap UVs for Godot's LightmapGI), OBJ with colours, a copy straight into a Godot project, Blender (open, or save a `.blend`), STL and sliced 3MF.
 
 | Follow-up questions | Customising a scene |
@@ -88,7 +91,7 @@ xcodebuild -downloadComponent MetalToolchain   # once
 
 ## Privacy
 
-With the local model, generation never leaves your Mac. Coding agents and cloud APIs receive your prompt (and reference picture, if attached) under their own terms. API keys are stored in `~/Library/Application Support/AssetForge/` with permissions for your user only. Sirpi never reads or copies coding-agent credentials.
+With the local model, generation never leaves your Mac. Coding agents and cloud APIs receive your prompt (and reference picture, if attached) under their own terms. API keys are stored in `~/Library/Application Support/Sirpi/` with permissions for your user only. Sirpi never reads or copies coding-agent credentials.
 
 ## Credits
 

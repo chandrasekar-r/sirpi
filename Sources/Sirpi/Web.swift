@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 // MARK: - forge:// scheme (WebKit's SwiftUI URLSchemeHandler)
-// forge://lib/<assetId>/<file>  -> Application Support/AssetForge/Library/<assetId>/<file>
+// forge://lib/<assetId>/<file>  -> Application Support/Sirpi/Library/<assetId>/<file>
 // forge://app/<file>            -> bundled Resources/web/<file>
 
 struct ForgeSchemeHandler: URLSchemeHandler {
@@ -113,6 +113,11 @@ final class WebController {
     @discardableResult
     func eval(_ js: String) async -> Any? {
         try? await page.callJavaScript("return eval(code)", arguments: ["code": js])
+    }
+
+    /// Like `eval`, but surfaces JavaScript exceptions and rejected promises as errors.
+    func evalThrowing(_ js: String) async throws -> Any? {
+        try await page.callJavaScript("return await eval(code)", arguments: ["code": js])
     }
 
     func snapshot() async -> NSImage? {

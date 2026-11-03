@@ -141,6 +141,8 @@ struct Composer: View {
             .padding(14)
             .glassEffect(.regular, in: .rect(cornerRadius: 18))
 
+            if app.generator.canContinue && !app.generator.isRunning { ContinueBanner() }
+
             FlowLayout(spacing: 8) {
                 ForEach(purpose == .print ? printChips : purpose == .scene ? sceneChips : chips, id: \.0) { chip in
                     Button(chip.0) { app.composerText = chip.1; focused = true }.buttonStyle(.glass)
@@ -161,6 +163,30 @@ struct Composer: View {
         .padding(.horizontal, width < 520 ? 20 : 56)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .onAppear { focused = true }
+    }
+}
+
+/// Offers to finish a generation that was stopped or cut off, instead of starting it again.
+struct ContinueBanner: View {
+    @Environment(AppModel.self) private var app
+    var body: some View {
+        let g = app.generator
+        let stopped = g.phase == .cancelled
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: stopped ? "pause.circle" : "scissors").font(.title2).foregroundStyle(Theme.accent)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(stopped ? "“\(g.shortTitle)” was stopped" : "“\(g.shortTitle)” was cut off").font(.headline)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text("\(g.content.count.formatted()) characters of code are kept. Continue picks up where it ended with \(g.continueProvider.map(ProviderSettings.label) ?? "the same model") instead of starting again.")
+                    .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+            Button("Discard") { app.generator.discardPartial() }.buttonStyle(.glass)
+            Button { app.continueGeneration() } label: { Label("Continue", systemImage: "play.fill") }
+                .buttonStyle(.glassProminent).disabled(!app.canContinueNow)
+        }
+        .padding(14)
+        .glassEffect(.regular, in: .rect(cornerRadius: 18))
     }
 }
 
@@ -590,7 +616,7 @@ struct AssetInspector: View {
                             ForEach(app.preview.errors.prefix(4), id: \.self) {
                                 Text($0).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
                             }
-                            Button("Fix with 3D Coder") { app.fixErrors() }.buttonStyle(.glass)
+                            Button(app.provider.kind == .local ? "Fix with 3D Coder" : "Fix with \(app.provider.name)") { app.fixErrors() }.buttonStyle(.glass)
                                 .disabled(!app.engineReady || app.generator.isRunning)
                         }
                         if app.prep.assetID == asset.id && app.prep.triangles > 0 {
@@ -615,6 +641,10 @@ struct AssetInspector: View {
                             Button { Task { await app.exportOBJ() } } label: {
                                 Label("Save OBJ file (with colours)…", systemImage: "cube").frame(maxWidth: .infinity, alignment: .leading)
                             }
+                            Button { app.turntableAsset = asset } label: {
+                                Label("Turntable video…", systemImage: "rotate.3d").frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .help("Renders a seamless 360° video of the asset (MP4, or transparent MOV)")
                             Button { Task { await app.openInBlender() } } label: {
                                 Label("Open in Blender", systemImage: "arrow.up.forward.app").frame(maxWidth: .infinity, alignment: .leading)
                             }

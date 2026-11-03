@@ -20,6 +20,8 @@ struct ForgeTask: Identifiable {
     var stage: Stage?
     var cancel: (() -> Void)?
     var retry: (() -> Void)?
+    /// Label for the retry button ("Retry" when nil).
+    var retryTitle: String?
 }
 
 struct Toast: Identifiable, Equatable {
@@ -60,7 +62,8 @@ final class TaskCenter {
     }
 
     /// Marks a task done or failed, then tells the user: a toast when the app is frontmost, a system notification otherwise.
-    func finish(_ id: UUID, success: Bool, title: String? = nil, detail: String, thumb: URL? = nil, retry: (() -> Void)? = nil) {
+    func finish(_ id: UUID, success: Bool, title: String? = nil, detail: String, thumb: URL? = nil, retry: (() -> Void)? = nil,
+                retryTitle: String? = nil) {
         guard let i = tasks.firstIndex(where: { $0.id == id }) else { return }
         tasks[i].state = success ? .done : .failed
         tasks[i].finished = Date()
@@ -68,6 +71,7 @@ final class TaskCenter {
         tasks[i].progress = nil
         tasks[i].cancel = nil
         tasks[i].retry = retry
+        tasks[i].retryTitle = retryTitle
         if let title { tasks[i].title = title }
         let t = tasks[i]
         announce(title: t.title, detail: detail, assetID: t.assetID, stage: t.stage, thumb: thumb, isError: !success)

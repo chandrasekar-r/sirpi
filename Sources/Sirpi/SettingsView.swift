@@ -85,6 +85,8 @@ private struct GenerationPane: View {
     @AppStorage(DetailLevel.key) private var detail = 0
     @AppStorage(Brief.enabledKey) private var askFirst = true
     @AppStorage(SettingKey.enableThinking) private var thinking = true
+    @AppStorage(VisualCheck.enabledKey) private var pictureCheck = true
+    @AppStorage(Patch.enabledKey) private var patchFixes = true
     @AppStorage("provider.maxOutputTokens") private var maxTokens = 32000
 
     var body: some View {
@@ -104,6 +106,12 @@ private struct GenerationPane: View {
                 Toggle("Let the model think before writing code", isOn: $thinking)
             } footer: {
                 Text("Follow-up questions are written by the fastest signed-in model (Claude Code with Haiku first). Thinking roughly doubles generation time; for the Claude API it switches between high and low effort.")
+            }
+            Section {
+                Toggle("Compare with the reference picture and refine once", isOn: $pictureCheck)
+                Toggle("Apply fixes and refinements as small edits", isOn: $patchFixes)
+            } footer: {
+                Text("After an asset made from a picture, Sirpi renders it from four sides, asks a vision model what differs from the picture, and sends the fixes back as one refinement. Skipped when it already scores 8/10 or better. Small edits change only the lines that need it, so a fix takes seconds instead of rewriting the whole file; if an edit doesn't match the code, Sirpi rewrites the file instead.")
             }
             Section("Cloud and agent output") {
                 LabeledContent("Max output tokens") {

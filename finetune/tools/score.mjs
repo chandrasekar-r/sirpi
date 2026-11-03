@@ -1,4 +1,4 @@
-// Scores generated pages: loads each in headless Chromium with AssetForge's bridge, records script errors,
+// Scores generated pages: loads each in headless Chromium with Sirpi's bridge, records script errors,
 // clicks Export GLB, captures the GLB, screenshots the page and measures the mesh.
 //
 // usage: node score.mjs <run dir> [--concurrency 4]

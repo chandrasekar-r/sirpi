@@ -210,6 +210,49 @@ final class Generator {
     var reference: ReferenceImage?
     /// Shown while a vision model reads the picture for a text-only engine.
     var statusNote: String?
+    /// Picture shown to engines that can see, in place of `reference` (e.g. the reference-vs-render comparison sheet).
+    private var attachment: ReferenceImage?
+
+    enum Mode: Equatable { case fresh, patch, rewrite, continuation }
+    /// How the current answer is turned into a file.
+    private(set) var mode: Mode = .fresh
+    /// The file a patch applies to.
+    private var baseHTML = ""
+    /// The partial answer being continued; `content` starts with it.
+    private var prefix = ""
+
+    /// Everything needed to repeat or continue the last request.
+    private struct Request {
+        var messages: [[String: String]]
+        var prompt: String
+        var base: Asset?
+        var refinement: String?
+        var image: ReferenceImage?
+        var attachment: ReferenceImage?
+        var context: String?
+        var purpose: AssetPurpose
+        var onDone: (Asset) -> Void
+        /// Engine that wrote it; a continuation uses the same one.
+        var providerID: String
+    }
+    /// Set for one run: the engine to use instead of the selected one.
+    private var providerOverride: Provider?
+
+    /// Engine a continuation will use.
+    var continueProvider: Provider? { last.map { Providers.find($0.providerID) } }
+    private var last: Request?
+    private weak var lastLibrary: AssetLibrary?
+
+    /// A stopped or cut-off answer that can be continued instead of starting over.
+    var canContinue: Bool {
+        guard last != nil, !content.isEmpty, mode != .patch else { return false }
+        switch phase {
+        case .failed, .cancelled:
+            if let html = Self.extractHTML(content) { return Continuation.isTruncated(html) }
+            return content.count > 200
+        default: return false
+        }
+    }
 
     var phaseLabel: String {
         switch phase {
@@ -232,29 +275,71 @@ final class Generator {
 
     /// Starts a generation. `base` + `refinement` turns it into a follow-up edit of an existing asset.
     func generate(prompt: String, base: Asset? = nil, refinement: String? = nil, image: ReferenceImage? = nil,
-                  context: String? = nil, library: AssetLibrary, onDone: @escaping (Asset) -> Void) {
+                  attachment: ReferenceImage? = nil, context: String? = nil, fullRewrite: Bool = false,
+                  library: AssetLibrary, onDone: @escaping (Asset) -> Void) {
         cancel()
         reasoning = ""; content = ""; tokens = 0; started = Date(); finished = nil
         thinkingStarted = nil; writingStarted = nil; reasoningTokens = 0; codeTokens = 0
         phase = .waiting
         title = refinement ?? prompt
+        prefix = ""
+        mode = .fresh
+        statusNote = nil
 
         let purpose = base.flatMap { AssetPurpose(rawValue: $0.purpose ?? "") } ?? AssetPurpose.current
         self.purpose = purpose
         var messages: [[String: String]] = [["role": "system", "content": purpose.system]]
-        if let base, let refinement, let html = try? String(contentsOf: base.htmlURL, encoding: .utf8) {
+        // Imported GLBs show a generic viewer page; there is no generated code to patch.
+        if let base, let refinement, base.imported != true, let html = try? String(contentsOf: base.htmlURL, encoding: .utf8) {
             messages.append(["role": "user", "content": base.prompt])
             messages.append(["role": "assistant", "content": "```html\n\(html)\n```"])
-            messages.append(["role": "user", "content": refinement + "\n\nReturn the complete updated standalone HTML file."])
+            let patch = Patch.enabled && !fullRewrite
+            mode = patch ? .patch : .rewrite
+            baseHTML = html
+            messages.append(["role": "user", "content": refinement + "\n\n"
+                             + (patch ? Patch.instruction : "Return the complete updated standalone HTML file.")])
         } else {
             messages.append(["role": "user", "content": prompt + DetailLevel.current.promptSuffix
                              + (context.map { "\n\n" + $0 } ?? "")])
         }
         reference = image
+        self.attachment = attachment
+        last = Request(messages: messages, prompt: prompt, base: base, refinement: refinement, image: image,
+                       attachment: attachment, context: context, purpose: purpose, onDone: onDone,
+                       providerID: ProviderSettings.selected.id)
+        lastLibrary = library
 
         task = Task(priority: .userInitiated) { [weak self] in
             await self?.run(messages: messages, prompt: prompt, base: base, refinement: refinement, library: library, onDone: onDone)
         }
+    }
+
+    /// Continues a stopped or cut-off answer from where it ends; the new tokens are appended to the partial file.
+    func continueLast() {
+        guard canContinue, var req = last, let library = lastLibrary else { return }
+        let partial = content
+        let tail = String(partial.suffix(600))
+        req.messages.append(["role": "assistant", "content": partial])
+        req.messages.append(["role": "user", "content": Continuation.request(tail: tail)])
+        task?.cancel(); task = nil
+        reasoning = ""; tokens = 0; started = Date(); finished = nil
+        thinkingStarted = nil; writingStarted = nil; reasoningTokens = 0; codeTokens = 0
+        phase = .waiting
+        purpose = req.purpose
+        prefix = partial
+        mode = .continuation
+        providerOverride = Providers.find(req.providerID)
+        let messages = req.messages
+        task = Task(priority: .userInitiated) { [weak self] in
+            await self?.run(messages: messages, prompt: req.prompt, base: req.base, refinement: req.refinement,
+                            library: library, onDone: req.onDone)
+        }
+    }
+
+    /// Forgets a stopped answer so the Continue banner goes away.
+    func discardPartial() {
+        guard !isRunning else { return }
+        content = ""; reasoning = ""; prefix = ""; last = nil; phase = .idle
     }
 
     func cancel() {
@@ -267,14 +352,14 @@ final class Generator {
 
     private func run(messages: [[String: String]], prompt: String, base: Asset?, refinement: String?,
                      library: AssetLibrary, onDone: @escaping (Asset) -> Void) async {
-        let provider = ProviderSettings.selected
+        let provider = providerOverride ?? ProviderSettings.selected
+        providerOverride = nil
         engineLabel = ProviderSettings.label(provider)
         var messages = messages
         var nativeImage: ReferenceImage?
-        statusNote = nil
-        if let image = reference {
+        if let image = reference, mode != .continuation {
             if provider.seesImages {
-                nativeImage = image
+                nativeImage = attachment ?? image
             } else {
                 // Text-only engine: a vision model turns the picture into a modelling brief first.
                 statusNote = "Reading the reference picture with \(ImageDescriber.describer?.name ?? "a vision model")…"
@@ -402,9 +487,46 @@ final class Generator {
     private func finish(prompt: String, base: Asset?, refinement: String?, library: AssetLibrary,
                         onDone: @escaping (Asset) -> Void) async {
         finished = Date()
-        guard let html = Self.extractHTML(content) else {
+        var answer = content
+        if mode == .continuation {
+            answer = Continuation.join(prefix, String(content.dropFirst(prefix.count)))
+            content = answer
+        }
+        if mode == .patch {
+            let blocks = Patch.parse(answer)
+            if !blocks.isEmpty {
+                let (patched, failed) = Patch.apply(blocks, to: baseHTML)
+                if let patched {
+                    save(html: patched, prompt: prompt, base: base, refinement: refinement, library: library, onDone: onDone)
+                } else {
+                    // The model misquoted the code: redo it as a full rewrite rather than fail.
+                    statusNote = "Edit \((failed ?? 0) + 1) of \(blocks.count) didn't match the code, so the model is rewriting the whole file."
+                    rewriteAfterFailedPatch()
+                }
+                return
+            }
+            // No edit blocks: the model returned a whole file instead, which is allowed.
+        }
+        guard let html = Self.extractHTML(answer) else {
             phase = .failed("The model did not return an HTML file. Try again or rephrase the prompt."); return
         }
+        if Continuation.isTruncated(html) {
+            phase = .failed("The answer was cut off before the file was finished. Continue it to finish the file.")
+            return
+        }
+        save(html: html, prompt: prompt, base: base, refinement: refinement, library: library, onDone: onDone)
+    }
+
+    private func rewriteAfterFailedPatch() {
+        guard let req = last, let library = lastLibrary else { phase = .failed("The fix could not be applied."); return }
+        let note = statusNote
+        generate(prompt: req.prompt, base: req.base, refinement: req.refinement, image: req.image, attachment: req.attachment,
+                 context: req.context, fullRewrite: true, library: library, onDone: req.onDone)
+        statusNote = note
+    }
+
+    private func save(html: String, prompt: String, base: Asset?, refinement: String?, library: AssetLibrary,
+                      onDone: @escaping (Asset) -> Void) {
         do {
             let a = try library.create(prompt: prompt, html: html, parent: base, refinement: refinement,
                                        seconds: elapsed, tokens: tokens, engine: engineLabel, reference: reference?.jpeg,

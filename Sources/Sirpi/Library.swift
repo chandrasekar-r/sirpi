@@ -21,6 +21,8 @@ struct Asset: Codable, Identifiable, Hashable {
     var dir: URL { Paths.library.appendingPathComponent(id, isDirectory: true) }
     var htmlURL: URL { dir.appendingPathComponent("asset.html") }
     var referenceURL: URL { dir.appendingPathComponent("reference.jpg") }
+    /// Reference picture beside four renders, made by the automatic picture check.
+    var comparisonURL: URL { dir.appendingPathComponent("comparison.jpg") }
     var glbURL: URL { dir.appendingPathComponent("asset.glb") }
     var stlURL: URL { dir.appendingPathComponent("asset.stl") }
     var threeMFURL: URL { dir.appendingPathComponent("\(fileStem).gcode.3mf") }

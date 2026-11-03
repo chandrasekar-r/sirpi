@@ -28,8 +28,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>com.rclabs.AssetForge</string>
   <key>CFBundleExecutable</key><string>Sirpi</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>1.0.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>1.1.0</string>
+  <key>CFBundleVersion</key><string>2</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>27.0</string>
   <key>NSHighResolutionCapable</key><true/>
@@ -41,7 +41,7 @@ PLIST
 codesign --force --deep --sign - "$APP"
 echo "Built $APP"
 if [[ "${1:-}" == "--install" ]]; then
-  # The bundle ID is unchanged (com.rclabs.AssetForge) so settings and the asset library carry over.
+  # The bundle ID is unchanged (com.rclabs.AssetForge) so settings carry over.
   [[ -d /Applications/AssetForge.app ]] && osascript -e 'tell application "Finder" to delete POSIX file "/Applications/AssetForge.app"' >/dev/null 2>&1
   rm -rf /Applications/Sirpi.app && cp -R "$APP" /Applications/ && echo "Installed to /Applications/Sirpi.app"
 fi

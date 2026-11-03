@@ -5,10 +5,13 @@ import CryptoKit
 
 enum Paths {
     static let support: URL = {
-        let u = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            // Kept as "AssetForge" (the app's original name) so existing libraries and settings carry over.
-            .appendingPathComponent("AssetForge", isDirectory: true)
-        try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
+        let fm = FileManager.default
+        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let u = base.appendingPathComponent("Sirpi", isDirectory: true)
+        // 1.0 stored everything under the app's original name; move it over once so libraries and keys carry across.
+        let old = base.appendingPathComponent("AssetForge", isDirectory: true)
+        if !fm.fileExists(atPath: u.path), fm.fileExists(atPath: old.path) { try? fm.moveItem(at: old, to: u) }
+        try? fm.createDirectory(at: u, withIntermediateDirectories: true)
         return u
     }()
 
