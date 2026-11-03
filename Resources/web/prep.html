@@ -1,0 +1,385 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Print prep</title>
+<style>
+  :root { color-scheme: dark; --panel:rgba(30,32,36,.84); --fg:#e8e8ea; --muted:#9a9ca3; --warn:#ffb340; }
+  html,body { margin:0; height:100%; overflow:hidden; background:#1d1f22; color:var(--fg); font:12px -apple-system, system-ui, sans-serif; }
+  canvas { display:block; }
+  .panel { position:absolute; background:var(--panel); padding:8px 10px; border-radius:8px; backdrop-filter:blur(8px); line-height:1.5; }
+  #hud { left:10px; top:10px; }
+  #hud b { font-variant-numeric: tabular-nums; }
+  .warn { color:var(--warn); }
+  #parts { right:14px; top:14px; border-radius:14px; border:1px solid rgba(255,255,255,.09); max-height:calc(100% - 20px); overflow:auto; min-width:170px; }
+  #parts summary { cursor:pointer; list-style:none; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+  #parts summary::-webkit-details-marker { display:none; }
+  #partlist { margin-top:6px; }
+  #parts label { display:flex; gap:6px; align-items:center; white-space:nowrap; padding:1px 0; }
+  #parts i { width:9px; height:9px; border-radius:2px; display:inline-block; flex:none; }
+  #parts .tag { color:var(--muted); font-size:10px; }
+  #msg { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--muted); font-size:14px; pointer-events:none; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/build/three.module.js",
+  "three/addons/": "./vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hud" class="panel" hidden style="display:none"></div>
+<details id="parts" class="panel" hidden><summary id="partsTitle">Parts</summary><div id="partlist"></div></details>
+<div id="msg">Loading model…</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import * as F from './meshfix.js';
+
+const post = (m) => { try { webkit.messageHandlers.forge.postMessage(m); } catch (_) {} };
+// Build volume in printer axes (mm): X width, Y depth, Z height. Set from the configured printer via setPlate().
+let PX = 256, PY = 256, PZ = 256;
+const PLATE = 256; // legacy default, kept for code that predates setPlate
+// viewer (Y-up, plate-centred) -> printer (Z-up, plate corner origin)
+let TO_PRINTER = new THREE.Matrix4().set(1, 0, 0, PX / 2, 0, 0, -1, PY / 2, 0, 1, 0, 0, 0, 0, 0, 1);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1d1f22);
+const camera = new THREE.PerspectiveCamera(40, 1, 1, 5000);
+camera.position.set(260, 220, 300);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 40, 0);
+scene.add(new THREE.HemisphereLight(0xffffff, 0x444444, 1.7));
+const sun = new THREE.DirectionalLight(0xffffff, 1.5); sun.position.set(200, 400, 150); scene.add(sun);
+let plate = new THREE.Mesh(new THREE.BoxGeometry(PX, 2, PY), new THREE.MeshStandardMaterial({ color: 0x2b2d31, roughness: .9 }));
+plate.position.y = -1; scene.add(plate);
+let grid = new THREE.GridHelper(Math.max(PX, PY), 16, 0x4a4d55, 0x383a40); grid.position.y = 0.05; scene.add(grid);
+let vol = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(PX, PZ, PY)), new THREE.LineBasicMaterial({ color: 0x3a3d44 }));
+vol.position.y = PZ / 2; scene.add(vol);
+
+function setPlate(x, y, z) {
+  PX = +x || 256; PY = +y || PX; PZ = +z || PX;
+  TO_PRINTER = new THREE.Matrix4().set(1, 0, 0, PX / 2, 0, 0, -1, PY / 2, 0, 1, 0, 0, 0, 0, 0, 1);
+  const pos = plate.position.clone();
+  scene.remove(plate); plate.geometry.dispose();
+  plate = new THREE.Mesh(new THREE.BoxGeometry(PX, 2, PY), plate.material); plate.position.copy(pos); scene.add(plate);
+  scene.remove(grid); grid.geometry.dispose();
+  grid = new THREE.GridHelper(Math.max(PX, PY), 16, 0x4a4d55, 0x383a40); grid.position.y = 0.05; scene.add(grid);
+  scene.remove(vol); vol.geometry.dispose();
+  vol = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(PX, PZ, PY)), vol.material); vol.position.y = PZ / 2; scene.add(vol);
+  if (S.parts?.length) scheduleUpdate({ frame: true });
+}
+
+const fitter = new THREE.Group(), holder = new THREE.Group();
+fitter.add(holder); scene.add(fitter);
+function resize() { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+
+// ---------------- state ----------------
+const S = {
+  parts: [],            // { name, positions, index, color, local, enabled, mesh, prepared, world, info, area, flat }
+  height: 60, repair: true, minThickness: 1.2,
+  multicolor: false, maxColors: 4,
+  palette: [],          // printer slots [{key, hex, label}] (empty = virtual slots from model colours)
+  overrides: {},        // clusterId -> slot key
+  baseColor: '#3DD68C', // single-colour preview / filament colour
+};
+
+// ---------------- loading ----------------
+async function load(url) {
+  document.getElementById('msg').textContent = 'Loading model…';
+  for (const p of S.parts) { holder.remove(p.mesh); p.mesh.geometry.dispose(); }
+  S.parts = []; holder.rotation.set(0, 0, 0); S.overrides = {};
+  delete document.getElementById('partlist').dataset.init;
+  const gltf = await new GLTFLoader().loadAsync(url);
+  const root = gltf.scene; root.updateMatrixWorld(true);
+  const v = new THREE.Vector3();
+  root.traverse((o) => {
+    if (!o.isMesh || !o.geometry?.attributes?.position) return;
+    const g = o.geometry, pos = g.attributes.position;
+    // bake skinning / morphs into plain local positions
+    const positions = new Float32Array(pos.count * 3);
+    for (let i = 0; i < pos.count; i++) { o.getVertexPosition(i, v); positions[i * 3] = v.x; positions[i * 3 + 1] = v.y; positions[i * 3 + 2] = v.z; }
+    const index = g.index ? Uint32Array.from(g.index.array) : null;
+    const mat = Array.isArray(o.material) ? o.material[0] : o.material;
+    // three keeps colours linear; convert to sRGB for matching against filament colours
+    const h = mat?.color ? mat.color.getHex(THREE.SRGBColorSpace) : 0xcccccc;
+    const c = { r: (h >> 16 & 255) / 255, g: (h >> 8 & 255) / 255, b: (h & 255) / 255 };
+    const transparent = mat && mat.transparent && mat.opacity < 0.25;
+    const mesh = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ roughness: .6, flatShading: true }));
+    mesh.matrixAutoUpdate = false; mesh.matrix.copy(o.matrixWorld); mesh.frustumCulled = false;
+    holder.add(mesh);
+    S.parts.push({ name: o.name || `part ${S.parts.length + 1}`, positions, index, color: [c.r, c.g, c.b],
+                   enabled: o.visible && !transparent, mesh, local: o.matrixWorld.clone() });
+  });
+  document.getElementById('msg').textContent = S.parts.length ? '' : 'The GLB contains no meshes.';
+  update({ frame: true });
+}
+
+// ---------------- geometry pipeline ----------------
+function partPrinterMatrix(p) {
+  fitter.updateMatrixWorld(true);
+  return new THREE.Matrix4().multiplyMatrices(TO_PRINTER, new THREE.Matrix4().multiplyMatrices(holder.matrixWorld, p.local));
+}
+
+function rawBounds() {
+  fitter.updateMatrixWorld(true);
+  const box = new THREE.Box3(), v = new THREE.Vector3();
+  for (const p of S.parts) {
+    if (!p.enabled) continue;
+    const m = new THREE.Matrix4().multiplyMatrices(holder.matrixWorld, p.local);
+    const step = Math.max(1, Math.floor(p.positions.length / 3 / 3000));
+    for (let i = 0; i < p.positions.length / 3; i += step) box.expandByPoint(v.fromArray(p.positions, i * 3).applyMatrix4(m));
+  }
+  return box;
+}
+
+function refit() {
+  fitter.scale.setScalar(1); fitter.position.set(0, 0, 0);
+  let box = rawBounds(); if (box.isEmpty()) return;
+  const raw = box.getSize(new THREE.Vector3());
+  S.nativeSize = [raw.x, raw.z, raw.y];
+  if (S.fit === 'native') {
+    // Print assets are modelled in mm: keep the real size, shrinking only if it doesn't fit the build volume.
+    const fit = Math.min(1, (PX * 0.98) / raw.x, (PY * 0.98) / raw.z, (PZ * 0.98) / raw.y);
+    S.fitScale = fit;
+    fitter.scale.setScalar(fit);
+    S.height = raw.y * fit;
+  } else {
+    fitter.scale.setScalar(S.height / Math.max(raw.y, 1e-6));
+  }
+  box = rawBounds();
+  const c = box.getCenter(new THREE.Vector3());
+  fitter.position.set(-c.x, -box.min.y, -c.z);
+  fitter.updateMatrixWorld(true);
+}
+
+function isFlat(mesh, M) {
+  const [x0, y0, z0, x1, y1, z1] = mesh.bbox, e = M.elements;
+  const mm = [x1 - x0, y1 - y0, z1 - z0].map((d, a) => d * Math.hypot(e[a * 4], e[a * 4 + 1], e[a * 4 + 2]));
+  return Math.min(...mm) < Math.max(...mm) * 1e-3;
+}
+
+function processParts() {
+  const stats = { solidified: 0, thickened: 0, capped: 0, flatExcluded: 0 };
+  for (const p of S.parts) {
+    const M = partPrinterMatrix(p);
+    const r = F.preparePart({ positions: p.positions, index: p.index, matrix: M.elements }, { repair: S.repair, minThickness: S.minThickness });
+    p.prepared = r.mesh; p.info = r.info;
+    p.flat = r.info.flat || (!S.repair && isFlat(r.mesh, M));
+    p.world = F.toWorld(r.mesh, M.elements);
+    p.area = F.surfaceArea(p.world);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(r.mesh.verts, 3));
+    g.setIndex(new THREE.BufferAttribute(r.mesh.tris, 1));
+    const ng = g.toNonIndexed(); ng.computeVertexNormals(); g.dispose();
+    p.mesh.geometry.dispose(); p.mesh.geometry = ng;
+    const usable = p.enabled && !(p.flat && !S.repair);
+    p.mesh.visible = usable;
+    if (!p.enabled) continue;
+    if (p.flat && !S.repair) stats.flatExcluded++;
+    if (r.info.solidified) stats.solidified++;
+    if (r.info.thickened) stats.thickened++;
+    if (r.info.capped) stats.capped++;
+  }
+  return stats;
+}
+
+const printable = () => S.parts.filter((p) => p.enabled && !(p.flat && !S.repair));
+
+// ---------------- colours ----------------
+function computeGroups(maxColors = S.maxColors, multicolor = S.multicolor) {
+  const parts = printable();
+  // single colour = one cluster holding everything, coloured by the model's area-weighted average
+  const clusters = parts.length
+    ? F.clusterColors(parts.map((p) => ({ color: p.color, weight: p.area })), multicolor ? maxColors : 1, multicolor ? 12 : Infinity)
+    : [];
+  const virtual = !S.palette.length;
+  const slots = virtual ? clusters.map((c) => ({ key: `v:${c.id}`, hex: c.hex, label: `Filament ${c.id + 1}` })) : S.palette;
+  const suggested = virtual ? clusters.map((c) => `v:${c.id}`) : F.suggestSlots(clusters, slots);
+  clusters.forEach((c, i) => {
+    const o = S.overrides[`${multicolor ? 'm' : 's'}${c.id}`];
+    c.slot = o && slots.some((s) => s.key === o) ? o : suggested[i];
+  });
+  // filaments = distinct slots, biggest first
+  const bySlot = new Map();
+  for (const c of clusters) {
+    const f = bySlot.get(c.slot) || { slot: c.slot, weight: 0, parts: [] };
+    f.weight += c.weight; f.parts.push(...c.parts.map((i) => parts[i])); bySlot.set(c.slot, f);
+  }
+  const filaments = [...bySlot.values()].sort((a, b) => b.weight - a.weight).map((f) => {
+    const s = slots.find((x) => x.key === f.slot) || { hex: S.baseColor, label: 'Filament' };
+    return { ...f, hex: s.hex, label: s.label };
+  });
+  return { clusters, slots, filaments, parts, multicolor };
+}
+
+function recolor(groups) {
+  const slotHex = new Map(groups.slots.map((s) => [s.key, s.hex]));
+  groups.clusters.forEach((c) => {
+    const hex = slotHex.get(c.slot) || c.hex;
+    for (const i of c.parts) groups.parts[i].mesh.material.color.set(hex);
+  });
+}
+
+// ---------------- UI ----------------
+function frame() {
+  const box = new THREE.Box3();
+  for (const p of printable()) box.expandByObject(p.mesh);
+  if (box.isEmpty()) return;
+  const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length();
+  controls.target.copy(c);
+  const d = Math.max(80, r * 1.6) * Math.max(1, 1.3 / Math.max(camera.aspect, 0.3));
+  camera.position.set(c.x + d * 0.7, c.y + d * 0.55, c.z + d * 0.9);
+}
+
+function buildPartList(groups) {
+  const list = document.getElementById('partlist'), panel = document.getElementById('parts');
+  list.innerHTML = '';
+  if (!list.dataset.init) { panel.hidden = true; panel.open = true; list.dataset.init = 1; }
+  document.getElementById('partsTitle').textContent = `Parts (${S.parts.length}) ▾`;
+  const slotHex = new Map(groups.slots.map((s) => [s.key, s.hex]));
+  const partHex = new Map();
+  groups.clusters.forEach((c) => c.parts.forEach((i) => partHex.set(groups.parts[i], slotHex.get(c.slot) || c.hex)));
+  S.parts.forEach((p) => {
+    const l = document.createElement('label');
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = p.enabled;
+    cb.onchange = () => { p.enabled = cb.checked; update(); };
+    const sw = document.createElement('i'); sw.style.background = partHex.get(p) || '#555';
+    const tags = [];
+    if (p.info?.solidified) tags.push('solidified'); else if (p.flat && !S.repair) tags.push('flat');
+    if (p.info?.thickened) tags.push('thickened');
+    if (p.info?.capped) tags.push('capped');
+    const t = document.createElement('span'); t.className = 'tag'; t.textContent = tags.length ? ` ${tags.join(', ')}` : '';
+    l.append(cb, sw, document.createTextNode(p.name), t); list.append(l);
+  });
+}
+
+function update({ frame: doFrame = false } = {}) {
+  if (!S.parts.length) return;
+  refit();
+  const stats = processParts();
+  const groups = computeGroups();
+  recolor(groups);
+  buildPartList(groups);
+  if (doFrame) frame();
+
+  const box = new THREE.Box3();
+  for (const p of printable()) box.expandByObject(p.mesh);
+  const size = box.isEmpty() ? new THREE.Vector3() : box.getSize(new THREE.Vector3());
+  const dims = [size.x, size.z, size.y];
+  const tris = printable().reduce((s, p) => s + p.prepared.tris.length / 3, 0);
+  const warnings = [];
+  if (dims[0] > PX || dims[1] > PY || dims[2] > PZ) warnings.push(`Larger than the ${PX} × ${PY} × ${PZ} mm build volume`);
+  if (S.fit === 'native' && S.fitScale < 0.999) warnings.push(`Scaled to ${Math.round(S.fitScale * 100)}% to fit the build volume`);
+  if (stats.flatExcluded) warnings.push(`${stats.flatExcluded} flat part(s) excluded. Turn on Repair to solidify them`);
+  if (!tris) warnings.push('Nothing selected to print');
+  const fixes = [];
+  if (stats.solidified) fixes.push(`${stats.solidified} flat solidified`);
+  if (stats.thickened) fixes.push(`${stats.thickened} thin thickened`);
+  if (stats.capped) fixes.push(`${stats.capped} open capped`);
+  const hud = document.getElementById('hud'); hud.hidden = false;
+  hud.innerHTML = `Size <b>${dims.map((d) => d.toFixed(1)).join(' × ')}</b> mm · <b>${Math.round(tris).toLocaleString()}</b> tris` +
+    (S.repair && fixes.length ? `<br>Repair: ${fixes.join(' · ')}` : '') +
+    (warnings.length ? `<div class="warn">⚠︎ ${warnings.join('<br>⚠︎ ')}</div>` : '');
+  const total = groups.filaments.reduce((s, f) => s + f.weight, 0) || 1;
+  post({
+    type: 'info', size: dims, triangles: Math.round(tris), warnings, repair: stats,
+    nativeSize: S.nativeSize, fit: S.fit || 'height', fitScale: S.fitScale ?? 1, height: S.height, plate: [PX, PY, PZ],
+    parts: S.parts.length, enabled: printable().length, multicolor: groups.multicolor,
+    clusters: groups.clusters.map((c) => ({ id: `${groups.multicolor ? 'm' : 's'}${c.id}`, hex: c.hex, share: c.weight / total, slot: c.slot, parts: c.parts.length })),
+    slots: groups.slots.map((s) => ({ key: s.key, hex: s.hex, label: s.label })),
+    filaments: groups.filaments.map((f) => ({ slot: f.slot, hex: f.hex, label: f.label, share: f.weight / total })),
+  });
+}
+
+let pending = null;
+const scheduleUpdate = (opts) => { clearTimeout(pending); pending = setTimeout(() => update(opts), 120); };
+
+// ---------------- export ----------------
+const b64 = (bytes) => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000)); return btoa(s); };
+
+async function exportPrint({ requestId, maxColors } = {}) {
+  try {
+    const multicolor = maxColors ? maxColors > 1 : S.multicolor;
+    const groups = computeGroups(maxColors || S.maxColors, multicolor);
+    let solids, report;
+    if (S.repair) {
+      const wasm = await F.loadManifold(() => import('./vendor/manifold/manifold.js'));
+      ({ solids, report } = await F.buildSolids(wasm, groups.filaments.map((f) => ({ key: f.slot, parts: f.parts })), { carve: true }));
+    } else {
+      solids = groups.filaments.map((f) => {
+        const total = f.parts.reduce((s, p) => s + p.world.tris.length * 3, 0), tri = new Float32Array(total);
+        let o = 0;
+        for (const p of f.parts) for (let i = 0; i < p.world.tris.length; i++) { tri.set(p.world.verts.subarray(p.world.tris[i] * 3, p.world.tris[i] * 3 + 3), o); o += 3; }
+        return { key: f.slot, triangles: tri, loose: f.parts.length };
+      });
+      report = { parts: printable().length, manifoldParts: 0, passthroughParts: printable().length };
+    }
+    const filaments = solids.filter((s) => s.triangles.length).map((s) => {
+      const f = groups.filaments.find((x) => x.slot === s.key);
+      return { slot: s.key, hex: f.hex, label: f.label, triangles: s.triangles.length / 9, data: b64(F.stlBytes(s.triangles)) };
+    });
+    post({ type: 'export', requestId, filaments, report });
+  } catch (e) {
+    post({ type: 'export', requestId, error: String(e && e.message || e) });
+  }
+}
+
+// Try the six axis-aligned orientations; keep the one with the most downward-facing area resting on the plate.
+function layFlat() {
+  const candidates = [[0, 0, 0], [Math.PI / 2, 0, 0], [-Math.PI / 2, 0, 0], [Math.PI, 0, 0], [0, 0, Math.PI / 2], [0, 0, -Math.PI / 2]];
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3();
+  let best = null, bestScore = -1;
+  for (const rot of candidates) {
+    holder.rotation.set(...rot);
+    refit(); fitter.updateMatrixWorld(true);
+    let minY = Infinity;
+    const tris = [];
+    for (const p of printable()) {
+      const pos = p.mesh.geometry.attributes.position, m = p.mesh.matrixWorld;
+      for (let i = 0; i < pos.count; i += 3) {
+        a.fromBufferAttribute(pos, i).applyMatrix4(m); b.fromBufferAttribute(pos, i + 1).applyMatrix4(m); c.fromBufferAttribute(pos, i + 2).applyMatrix4(m);
+        minY = Math.min(minY, a.y, b.y, c.y);
+        tris.push([a.clone(), b.clone(), c.clone()]);
+      }
+    }
+    let contact = 0, total = 0;
+    for (const [p0, p1, p2] of tris) {
+      n.subVectors(p1, p0).cross(c.subVectors(p2, p0));
+      const area = n.length() / 2; total += area;
+      if (area > 0 && n.y / (2 * area) < -0.95 && Math.max(p0.y, p1.y, p2.y) - minY < 0.6) contact += area;
+    }
+    const score = total ? contact / total : 0;
+    if (score > bestScore + 1e-4) { bestScore = score; best = rot; }
+  }
+  holder.rotation.set(...best);
+  update({ frame: true });
+}
+
+window.prep = {
+  layFlat,
+  frame,
+  toggleParts: () => { const p = document.getElementById('parts'); p.hidden = !p.hidden; },
+  load: (url) => load(url).catch((e) => { document.getElementById('msg').textContent = 'Could not load GLB: ' + e.message; post({ type: 'error', message: String(e) }); }),
+  setHeight: (mm) => { S.fit = 'height'; S.height = Math.max(1, Math.min(PZ, +mm || 60)); scheduleUpdate({ frame: true }); },
+  setFit: (mode) => { S.fit = mode === 'native' ? 'native' : 'height'; scheduleUpdate({ frame: true }); },
+  setPlate,
+  rotate: (axis, deg) => { holder.rotation[axis] += deg * Math.PI / 180; update({ frame: true }); },
+  resetRotation: () => { holder.rotation.set(0, 0, 0); update({ frame: true }); },
+  setRepair: (on, minT) => { S.repair = !!on; S.minThickness = Math.max(0.4, +minT || 1.2); scheduleUpdate(); },
+  setMulticolor: (on, maxColors) => { S.multicolor = !!on; S.maxColors = Math.max(1, Math.min(16, maxColors | 0 || 4)); update(); },
+  setPalette: (slots) => { S.palette = Array.isArray(slots) ? slots : []; update(); },
+  setBaseColor: (hex) => { S.baseColor = hex || '#3DD68C'; update(); },
+  assign: (clusterId, slotKey) => { S.overrides[clusterId] = slotKey; update(); },
+  exportPrint,
+};
+post({ type: 'ready' });
+</script>
+</body>
+</html>

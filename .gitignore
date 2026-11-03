@@ -1,0 +1,24 @@
+# Build output
+build/
+.build/
+.swiftpm/
+DerivedData/
+*.log
+*.xcuserstate
+.DS_Store
+
+# Fine-tuning outputs (generated data, runs, models)
+finetune/runs/
+finetune/data/sft/
+finetune/data/probe/
+finetune/data/train_game.jsonl
+finetune/data/train_print.jsonl
+finetune/tools/node_modules/
+finetune/.venv*/
+__pycache__/
+*.pyc
+
+# Local model conversion
+tools/model/.convert/
+*.gguf
+*.safetensors

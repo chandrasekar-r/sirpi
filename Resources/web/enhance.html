@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>GLB tools</title>
+<script type="importmap">
+{ "imports": {
+  "three": "forge://app/vendor/three/build/three.module.js",
+  "three/addons/": "forge://app/vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<script type="module">
+// Headless worker page: load a GLB, run the requested passes, and return a new GLB (or OBJ).
+//   ops: { subdivide: { levels, creaseAngle }, lightmapUVs: { resolution }, format: 'glb' | 'obj' }
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+import { OBJExporter } from 'three/addons/exporters/OBJExporter.js';
+import { enhanceScene } from './subdivide.js';
+import { addLightmapUVs, bakeMaterialColors } from './glbtools.js';
+
+const post = (m) => { try { window.webkit.messageHandlers.forge.postMessage(m); } catch (_) {} };
+const toBase64 = (buf) => {
+  const bytes = new Uint8Array(buf); let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+};
+
+window.glbTool = async (url, ops, requestId) => {
+  try {
+    ops = ops || {};
+    const gltf = await new GLTFLoader().loadAsync(url);
+    const t0 = performance.now();
+    const stats = { three: THREE.REVISION };
+    if (ops.subdivide) stats.subdivide = enhanceScene(gltf.scene, ops.subdivide);
+    if (ops.lightmapUVs) stats.lightmapUVs = addLightmapUVs(gltf.scene, ops.lightmapUVs);
+    let data, format = ops.format || 'glb';
+    if (format === 'obj') {
+      stats.colors = bakeMaterialColors(gltf.scene);
+      data = new TextEncoder().encode(new OBJExporter().parse(gltf.scene)).buffer;
+    } else {
+      data = await new GLTFExporter().parseAsync(gltf.scene, { binary: true, animations: gltf.animations || [] });
+    }
+    stats.ms = Math.round(performance.now() - t0);
+    post({ type: 'glbTool', requestId, format, data: toBase64(data), stats });
+  } catch (e) {
+    post({ type: 'glbTool', requestId, error: String((e && (e.stack || e.message)) || e) });
+  }
+  return true;
+};
+post({ type: 'enhanceReady' });
+</script>
+</body>
+</html>

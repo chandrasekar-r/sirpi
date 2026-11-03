@@ -1,0 +1,178 @@
+import SwiftUI
+
+// In-app help (Help › Sirpi Help). Plain topics with short sections and the full shortcut list.
+
+enum HelpTopic: String, CaseIterable, Identifiable {
+    case start, generate, customise, detail, print, export, simready, providers, shortcuts, troubleshooting
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .start: "Getting started"
+        case .generate: "Generating"
+        case .customise: "Customising scenes"
+        case .detail: "Smoothing and detail"
+        case .print: "Prepare, slice and print"
+        case .export: "Exporting"
+        case .simready: "NVIDIA SimReady"
+        case .providers: "Models and providers"
+        case .shortcuts: "Keyboard shortcuts"
+        case .troubleshooting: "Troubleshooting"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .start: "star"
+        case .generate: "sparkles"
+        case .customise: "slider.horizontal.below.square.and.square.filled"
+        case .detail: "circle.hexagongrid"
+        case .print: "printer"
+        case .export: "square.and.arrow.up"
+        case .simready: "shippingbox"
+        case .providers: "cpu"
+        case .shortcuts: "keyboard"
+        case .troubleshooting: "wrench.and.screwdriver"
+        }
+    }
+}
+
+struct HelpView: View {
+    @State private var topic: HelpTopic? = .start
+    var body: some View {
+        NavigationSplitView {
+            List(HelpTopic.allCases, selection: $topic) { t in Label(t.title, systemImage: t.symbol).tag(t) }
+                .navigationSplitViewColumnWidth(210)
+        } detail: {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    Text((topic ?? .start).title).font(.title.weight(.semibold))
+                    content(topic ?? .start)
+                }
+                .frame(maxWidth: 640, alignment: .leading)
+                .padding(28)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .textSelection(.enabled)
+        }
+        .frame(minWidth: 760, idealWidth: 860, minHeight: 520, idealHeight: 640)
+        .onReceive(NotificationCenter.default.publisher(for: .showHelpTopic)) { n in
+            if let t = n.object as? HelpTopic { topic = t }
+        }
+    }
+
+    @ViewBuilder private func content(_ t: HelpTopic) -> some View {
+        switch t {
+        case .start:
+            para("Sirpi (சிற்பி, \"sculptor\") turns a sentence or a picture into a 3D model you can use in a game, print on your Bambu Lab printer, or build into a whole scene.")
+            steps(["Pick what you are making in the composer: Game asset, 3D print or 3D scene.",
+                   "Describe it, or attach a reference picture.",
+                   "Answer the short follow-up questions (or skip them) and press Generate.",
+                   "When the preview appears, refine it, customise it, export it, or press Prepare for print."])
+            para("Everything you make is saved in the library on the left. Tasks in progress are under Tasks in the toolbar.")
+        case .generate:
+            section("Purpose", "Game asset makes one object for Godot. 3D print makes one solid, watertight object at real size in millimetres that fits your printer. 3D scene makes a whole place in metres with every object separately named, so you can customise it afterwards.")
+            section("Detail", "Low-poly is quickest. Detailed and High detail ask the model for more parts, rounder shapes, bevels and small details. Large cloud models follow this best.")
+            section("Follow-up questions", "Before generating, a quick model asks a few questions about style, size, colours or purpose. Answer, type your own, or skip. Turn this off in Settings › Generation.")
+            section("Reference picture", "Use Picture in the composer, drop an image on the box, or choose File › Generate from Picture. Cloud models and Claude Code see the picture; for the local model, a vision model describes it first.")
+            section("Refine", "Select an asset and describe a change under Refine. Each refinement is a new version; the original stays.")
+        case .customise:
+            para("Select an asset and press Customise scene (or Customise parts).")
+            steps(["Click an object in the view, or pick it in the Objects list.",
+                   "Move, rotate or scale with the gizmo (W, E, R), or type exact values.",
+                   "Recolour each material, duplicate, hide or delete objects.",
+                   "Insert adds an asset from your library or from NVIDIA SimReady.",
+                   "Save as new version keeps the original unchanged."])
+            para("Undo with ⌘Z. Snap moves in 0.25 m steps and turns in 15° steps.")
+        case .detail:
+            para("Smooth & add detail subdivides every part so curved shapes become smooth, while edges sharper than the angle you set stay crisp. Choose ×4, ×16 or ×64 more triangles. The result is saved as a new version.")
+        case .print:
+            steps(["Prepare: set the height, lay the model flat, turn on repair (merges parts into watertight solids) and choose single or AMS colours.",
+                   "Slice: runs Bambu Studio in the background and shows the layers, time and filament.",
+                   "Print: sends the file to your printer over the local network and shows progress."])
+            para("3D-print assets keep their real size and are shrunk only if they do not fit your printer's build volume. Set your printer model and nozzle in Settings › Printer.")
+        case .export:
+            section("GLB", "Export GLB saves the model. Turn on Add lightmap UVs to include a second UV set for baked lighting in Godot (LightmapGI).")
+            section("Godot", "Copy to Godot project puts the GLB in res://assets/assetforge/ of the project you choose once.")
+            section("OBJ", "Save OBJ file keeps colours by baking them into the vertices, for tools that do not read GLB.")
+            section("Blender", "Open in Blender launches Blender with the asset imported. Save Blender file writes a .blend in the background. Both need Blender installed.")
+            section("STL and 3MF", "After slicing, File › Export STL and Save Sliced File give you the print files.")
+        case .simready:
+            para("File › Browse NVIDIA SimReady Library (⇧⌘L) lists 2,677 real-world assets with physically based materials: food, kitchenware, boxes, tools, furniture, warehouse and more.")
+            steps(["Search or pick a category, select an asset and press Import (or double-click).",
+                   "Sirpi downloads only what that asset needs and converts it to GLB in metres.",
+                   "It appears in your library and works like any other asset."])
+            para("Textures default to 512 px. Choose Full only when you need the original quality; those downloads are large. The first import sets up the USD converter once.")
+            para("Licence: CC-BY-4.0. You may use these assets, including commercially, if you credit NVIDIA.")
+        case .providers:
+            section("On this Mac", "The bundled 3D Coder runs inside the app on the GPU. MLX 4-bit is fastest; 6-bit is closest to the original.")
+            section("Coding agents", "Claude Code, opencode, Grok, Kimi, Cursor Agent, Codex, Gemini CLI and pi are detected automatically and use the login they already have. Pick a model for each in Settings › Coding Agents.")
+            section("Cloud APIs", "Claude, OpenAI, Gemini, xAI, Cloudflare Workers AI, OpenRouter, Groq, DeepSeek and Mistral need an API key in Settings › Cloud APIs. Ollama and LM Studio run locally.")
+        case .shortcuts:
+            shortcuts([
+                ("New asset", "⌘N"), ("Generate", "⌘↩"), ("Refine", "⌘R"), ("Fix script errors", "⇧⌘F"), ("Stop generating", "⌘."),
+                ("Generate, Prepare, Slice, Print", "⌘1 to ⌘4"), ("Import GLB", "⌘O"), ("Generate from picture", "⇧⌘O"),
+                ("NVIDIA SimReady library", "⇧⌘L"), ("Export GLB", "⇧⌘E"), ("Export STL", "⌥⇧⌘E"), ("Save sliced file", "⇧⌘S"),
+                ("Copy to Godot", "⌥⌘G"), ("Open in Blender", "⌥⌘B"), ("Reveal in Finder", "⇧⌘R"), ("Move to Trash", "⌘⌫"),
+                ("Lay flat", "⌥⌘F"), ("Multi-colour", "⇧⌘C"), ("Slice", "⌘B"), ("Send to printer", "⇧⌘P"), ("Pause or resume print", "⌥⌘P"),
+                ("Chamber light", "⌥⌘L"), ("Printer camera", "⌥⌘C"), ("Show tasks", "⌥⌘T"), ("Show or hide inspector", "⌥⌘I"), ("Reset 3D view", "⌘0"),
+                ("Scene: move, rotate, scale", "W, E, R"), ("Scene: frame object", "F"), ("Scene: duplicate", "⌘D"), ("Scene: undo", "⌘Z"),
+                ("Scene: delete", "Delete"), ("Scene: deselect", "Esc"), ("Help", "⌘?"),
+            ])
+        case .troubleshooting:
+            section("Generate is greyed out", "The engine shown under Writes the asset is not ready. Open Settings: the local model may still be loading, a coding agent may need signing in, or a cloud API may need a key.")
+            section("\"Not available in your country\"", "Some opencode models are region-locked. Choose another model for opencode in Settings › Coding Agents, for example a Cloudflare Workers AI model.")
+            section("The page shows script errors", "Press Fix Script Errors (⇧⌘F) to have the model repair them, or generate again.")
+            section("A print does not fit", "Prepare shrinks print assets to fit and warns you. Check the printer model in Settings › Printer.")
+            section("Generation is slow", "Other GPU work (such as model training) shares the GPU. The speed is shown under Live while generating.")
+        }
+    }
+
+    private func para(_ s: String) -> some View {
+        Text(s).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+    }
+    private func section(_ title: String, _ body: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title).fontWeight(.semibold)
+            para(body)
+        }
+    }
+    private func steps(_ items: [String]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(Array(items.enumerated()), id: \.offset) { i, s in
+                HStack(alignment: .firstTextBaseline, spacing: 10) {
+                    Text("\(i + 1)").font(.callout.weight(.semibold).monospacedDigit()).foregroundStyle(Theme.accent).frame(width: 16)
+                    Text(s).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+    private func shortcuts(_ rows: [(String, String)]) -> some View {
+        Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: 8) {
+            ForEach(rows, id: \.0) { r in
+                GridRow {
+                    Text(r.0)
+                    Text(r.1).font(.body.monospaced()).foregroundStyle(.secondary)
+                }
+            }
+        }
+    }
+}
+
+extension Notification.Name { static let showHelpTopic = Notification.Name("showHelpTopic") }
+
+/// Help menu items. A View so it can open the Help window.
+struct HelpMenuItems: View {
+    @Environment(\.openWindow) private var openWindow
+    var body: some View {
+        Button("Sirpi Help") { openWindow(id: "help") }.keyboardShortcut("?", modifiers: .command)
+        Button("Keyboard Shortcuts") {
+            openWindow(id: "help")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                NotificationCenter.default.post(name: .showHelpTopic, object: HelpTopic.shortcuts)
+            }
+        }
+        Divider()
+        Link("NVIDIA SimReady licence (CC-BY-4.0)", destination: URL(string: "https://creativecommons.org/licenses/by/4.0/")!)
+        Link("three.js documentation", destination: URL(string: "https://threejs.org/docs/")!)
+        Link("Bambu Lab LAN mode guide", destination: URL(string: "https://wiki.bambulab.com/en/knowledge-sharing/enable-lan-mode")!)
+    }
+}

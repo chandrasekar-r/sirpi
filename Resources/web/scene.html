@@ -1,0 +1,294 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Scene editor</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1D1F22; }
+  canvas { display: block; outline: none; }
+  #hint { position: absolute; left: 14px; top: 12px; color: rgba(237,238,240,.55); font: 12px -apple-system, system-ui, sans-serif; pointer-events: none; white-space: pre; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "forge://app/vendor/three/build/three.module.js",
+  "three/addons/": "forge://app/vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hint">Click an object to select it.   W move   E rotate   R scale   F frame   Delete removes</div>
+<script type="module">
+// Scene customiser: select objects of a generated environment, transform them with a gizmo, recolour, duplicate,
+// delete, insert library assets, undo, and export the result as GLB. Driven by Sirpi through window.sceneEditor.
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { TransformControls } from 'three/addons/controls/TransformControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
+
+const post = (m) => { try { window.webkit.messageHandlers.forge.postMessage(m); } catch (_) {} };
+const toBase64 = (buf) => {
+  const bytes = new Uint8Array(buf); let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+};
+
+// ---------- viewport ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.shadowMap.enabled = true;
+renderer.toneMapping = THREE.NeutralToneMapping;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+// Neutral studio reflections so metal and glossy PBR materials (e.g. NVIDIA SimReady) read correctly.
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+scene.environmentIntensity = 0.6;
+scene.background = new THREE.Color(0x1d1f22);
+const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 5000);
+camera.position.set(8, 6, 10);
+const orbit = new OrbitControls(camera, renderer.domElement);
+orbit.enableDamping = true;
+const helperLights = new THREE.Group();
+helperLights.add(new THREE.HemisphereLight(0xffffff, 0x3a3d44, 0.9));
+const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(6, 12, 8); helperLights.add(sun);
+scene.add(helperLights);
+const grid = new THREE.GridHelper(40, 40, 0x3f424a, 0x2e3036); scene.add(grid);
+
+const gizmo = new TransformControls(camera, renderer.domElement);
+gizmo.setSize(0.9);
+scene.add(gizmo.getHelper());
+const box = new THREE.BoxHelper(undefined, 0xc8f25a); box.visible = false; scene.add(box);
+
+function resize() { renderer.setSize(innerWidth, innerHeight); camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); }
+addEventListener('resize', resize); resize();
+
+// ---------- model ----------
+let root = null, container = null, mixer = null, animations = [];
+let selected = null, snap = false;
+const undo = [];
+const clock = new THREE.Clock();
+let seq = 0;
+let lastColor = null;
+
+const isUnit = (o) => o && o.parent === container;
+const unitOf = (o) => { while (o && o.parent && o.parent !== container) o = o.parent; return isUnit(o) ? o : null; };
+const units = () => (container ? container.children.filter((c) => !c.isLight && !c.isCamera && hasMesh(c)) : []);
+function hasMesh(o) { let m = false; o.traverse((x) => { if (x.isMesh) m = true; }); return m; }
+function idOf(o) { if (!o.userData.afid) o.userData.afid = 'n' + (++seq); return o.userData.afid; }
+const byId = (id) => units().find((u) => u.userData.afid === id) || null;
+const deg = (r) => +(THREE.MathUtils.radToDeg(r)).toFixed(1);
+const r3 = (v) => [+v.x.toFixed(3), +v.y.toFixed(3), +v.z.toFixed(3)];
+
+const generic = /^(object|group|mesh|node|scene|part)?[_ ]?\d*$/i;
+function nameOf(o, i) {
+  if (o.name && !generic.test(o.name)) return o.name.replace(/_/g, ' ');
+  let m = null; o.traverse((x) => { if (!m && x.name && !generic.test(x.name)) m = x.name; });
+  return m ? m.replace(/_/g, ' ') : `Part ${i + 1}`;
+}
+
+function materialsOf(o) {
+  const seen = new Map();
+  o.traverse((x) => { if (x.isMesh) for (const m of [].concat(x.material)) if (m && m.color && !seen.has(m.uuid)) seen.set(m.uuid, m); });
+  return [...seen.values()].slice(0, 8);
+}
+
+function report() {
+  const list = units().map((u, i) => ({ id: idOf(u), name: u.userData.afName || (u.userData.afName = nameOf(u, i)), visible: u.visible }));
+  let sel = null;
+  if (selected) {
+    sel = {
+      id: idOf(selected), name: selected.userData.afName,
+      position: r3(selected.position), rotation: [deg(selected.rotation.x), deg(selected.rotation.y), deg(selected.rotation.z)],
+      scale: r3(selected.scale),
+      materials: materialsOf(selected).map((m, i) => ({ index: i, hex: '#' + m.color.getHexString(THREE.SRGBColorSpace), name: m.name || `Material ${i + 1}` })),
+    };
+  }
+  post({ type: 'scene', objects: list, selected: sel, canUndo: undo.length > 0, mode: gizmo.mode, snap });
+}
+
+function select(o) {
+  selected = o || null;
+  if (selected) { gizmo.attach(selected); box.setFromObject(selected); box.visible = true; }
+  else { gizmo.detach(); box.visible = false; }
+  report();
+}
+
+// ---------- undo ----------
+const snapshot = (o) => ({ o, p: o.position.clone(), q: o.quaternion.clone(), s: o.scale.clone() });
+function restore(t) { t.o.position.copy(t.p); t.o.quaternion.copy(t.q); t.o.scale.copy(t.s); t.o.updateMatrixWorld(true); }
+function pushUndo(fn) { undo.push(fn); if (undo.length > 100) undo.shift(); }
+
+let dragStart = null;
+gizmo.addEventListener('dragging-changed', (e) => {
+  orbit.enabled = !e.value;
+  if (e.value && selected) dragStart = snapshot(selected);
+  if (!e.value && dragStart) { const t = dragStart; pushUndo(() => { restore(t); select(t.o); }); dragStart = null; report(); }
+});
+gizmo.addEventListener('objectChange', () => { if (selected) box.setFromObject(selected); });
+
+// ---------- picking (a click, not an orbit drag) ----------
+const ray = new THREE.Raycaster(), ndc = new THREE.Vector2();
+let down = null;
+renderer.domElement.addEventListener('pointerdown', (e) => { down = { x: e.clientX, y: e.clientY }; });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!down || gizmo.dragging) return;
+  const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y); down = null;
+  if (moved > 4 || !container) return;
+  ndc.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ndc, camera);
+  const hit = ray.intersectObjects(units(), true).find((h) => h.object.visible);
+  select(hit ? unitOf(hit.object) : null);
+});
+
+// ---------- keyboard (when the viewport has focus) ----------
+addEventListener('keydown', (e) => {
+  if (e.target !== document.body && e.target !== renderer.domElement) return;
+  const k = e.key.toLowerCase();
+  if (k === 'w') api.setMode('translate');
+  else if (k === 'e') api.setMode('rotate');
+  else if (k === 'r' && !e.metaKey) api.setMode('scale');
+  else if (k === 'f' && selected) api.focus(idOf(selected));
+  else if ((k === 'delete' || k === 'backspace') && selected) api.remove(idOf(selected));
+  else if (k === 'd' && e.metaKey && selected) { e.preventDefault(); api.duplicate(idOf(selected)); }
+  else if (k === 'z' && e.metaKey) { e.preventDefault(); api.undo(); }
+  else if (k === 'escape') select(null);
+});
+
+// ---------- framing ----------
+function frameObject(o, pad = 1.6) {
+  const b = new THREE.Box3().setFromObject(o); if (b.isEmpty()) return;
+  const c = b.getCenter(new THREE.Vector3()), r = b.getSize(new THREE.Vector3()).length() * 0.5 * pad;
+  const dir = camera.position.clone().sub(orbit.target).normalize();
+  orbit.target.copy(c);
+  camera.position.copy(c.clone().add(dir.multiplyScalar(Math.max(r / Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)), 0.5))));
+  camera.near = Math.max(0.01, r / 200); camera.far = r * 400; camera.updateProjectionMatrix();
+}
+
+// ---------- API ----------
+const api = {
+  async load(url) {
+    if (root) { scene.remove(root); }
+    const gltf = await new GLTFLoader().loadAsync(url);
+    root = gltf.scene; animations = gltf.animations || [];
+    container = root;
+    while (container.children.length === 1 && !container.children[0].isMesh) container = container.children[0];
+    scene.add(root);
+    // Drop generated helper lights from the scene's own lighting duplicates: keep everything, just ensure shadows.
+    root.traverse((x) => { if (x.isMesh) { x.castShadow = true; x.receiveShadow = true; } });
+    mixer = animations.length ? new THREE.AnimationMixer(root) : null;
+    if (mixer) animations.forEach((a) => mixer.clipAction(a).play());
+    const b = new THREE.Box3().setFromObject(root), size = b.getSize(new THREE.Vector3());
+    grid.scale.setScalar(Math.max(1, Math.ceil(Math.max(size.x, size.z) / 40) || 1));
+    grid.position.y = b.min.y;
+    gizmo.setTranslationSnap(snap ? 0.25 : null);
+    undo.length = 0; select(null); frameObject(root, 1.1);
+    post({ type: 'sceneLoaded', count: units().length });
+  },
+  select(id) { select(byId(id)); },
+  setMode(m) { gizmo.setMode(m); report(); },
+  setSnap(on) {
+    snap = !!on;
+    gizmo.setTranslationSnap(snap ? 0.25 : null);
+    gizmo.setRotationSnap(snap ? THREE.MathUtils.degToRad(15) : null);
+    gizmo.setScaleSnap(snap ? 0.1 : null);
+    report();
+  },
+  setTransform(id, t) {
+    const o = byId(id); if (!o) return;
+    const before = snapshot(o);
+    if (t.position) o.position.fromArray(t.position);
+    if (t.rotation) o.rotation.set(...t.rotation.map((d) => THREE.MathUtils.degToRad(d)));
+    if (t.scale) o.scale.fromArray(t.scale);
+    o.updateMatrixWorld(true);
+    pushUndo(() => { restore(before); select(o); });
+    if (o === selected) box.setFromObject(o);
+    report();
+  },
+  setColor(id, index, hex) {
+    const o = byId(id); if (!o) return;
+    const mats = materialsOf(o); const m = mats[index]; if (!m) return;
+    // Give this object its own copy so other objects sharing the material keep their colour.
+    if (!m.userData.afOwned) {
+      const copy = m.clone(); copy.userData.afOwned = true;
+      o.traverse((x) => { if (x.isMesh) x.material = Array.isArray(x.material) ? x.material.map((mm) => (mm === m ? copy : mm)) : (x.material === m ? copy : x.material); });
+      return api.setColor(id, index, hex);
+    }
+    // A colour-picker drag sends many edits; one undo step covers edits to the same material within a second.
+    const now = performance.now();
+    if (!(lastColor && lastColor.m === m && now - lastColor.t < 1000)) {
+      const old = m.color.clone();
+      pushUndo(() => { m.color.copy(old); report(); });
+    }
+    lastColor = { m, t: now };
+    m.color.set(hex);
+    report();
+  },
+  rename(id, name) { const o = byId(id); if (!o) return; const old = o.userData.afName; o.userData.afName = name; o.name = name; pushUndo(() => { o.userData.afName = old; o.name = old; report(); }); report(); },
+  toggleVisible(id) { const o = byId(id); if (!o) return; o.visible = !o.visible; pushUndo(() => { o.visible = !o.visible; report(); }); report(); },
+  duplicate(id) {
+    const o = byId(id); if (!o) return;
+    const c = o.clone(true); delete c.userData.afid;
+    c.userData.afName = (o.userData.afName || 'Object') + ' copy';
+    const b = new THREE.Box3().setFromObject(o);
+    c.position.x += Math.max(0.2, (b.max.x - b.min.x) * 1.1);
+    container.add(c);
+    pushUndo(() => { container.remove(c); select(o); });
+    select(c);
+  },
+  remove(id) {
+    const o = byId(id); if (!o) return;
+    const parent = o.parent, index = parent.children.indexOf(o);
+    parent.remove(o);
+    pushUndo(() => {
+      parent.add(o);
+      const i = parent.children.indexOf(o); parent.children.splice(i, 1); parent.children.splice(index, 0, o);
+      select(o);
+    });
+    select(null);
+  },
+  async insert(url, name) {
+    const gltf = await new GLTFLoader().loadAsync(url);
+    const g = new THREE.Group(); g.add(gltf.scene); g.userData.afName = name || 'Inserted asset';
+    // Stand it on the ground at the orbit target, sized like the scene's typical object.
+    const b = new THREE.Box3().setFromObject(gltf.scene), s = b.getSize(new THREE.Vector3());
+    // Keep the asset's own size, limited to 5-50 % of the scene's height so it is neither lost nor overwhelming.
+    const sceneH = new THREE.Box3().setFromObject(container).getSize(new THREE.Vector3()).y || 1;
+    const h = Math.min(sceneH * 0.5, Math.max(sceneH * 0.05, s.y || 1));
+    const k = s.y > 0 ? h / s.y : 1;
+    gltf.scene.scale.setScalar(k);
+    gltf.scene.position.set(-((b.min.x + b.max.x) / 2) * k, -b.min.y * k, -((b.min.z + b.max.z) / 2) * k);
+    const ground = new THREE.Box3().setFromObject(container).min.y;
+    g.position.set(orbit.target.x, ground, orbit.target.z);
+    g.traverse((x) => { if (x.isMesh) { x.castShadow = true; x.receiveShadow = true; } });
+    container.add(g);
+    pushUndo(() => { container.remove(g); select(null); });
+    select(g);
+  },
+  focus(id) { const o = byId(id); if (o) frameObject(o); },
+  frameAll() { if (root) frameObject(root, 1.1); },
+  undo() { const fn = undo.pop(); if (fn) fn(); report(); },
+  async export(requestId) {
+    try {
+      select(null);
+      const visibleOnly = root.clone(true);
+      visibleOnly.traverse((x) => { x.userData = {}; });
+      const hidden = []; visibleOnly.traverse((x) => { if (!x.visible) hidden.push(x); });
+      hidden.forEach((x) => x.parent && x.parent.remove(x));
+      const glb = await new GLTFExporter().parseAsync(visibleOnly, { binary: true, animations });
+      post({ type: 'sceneExport', requestId, data: toBase64(glb) });
+    } catch (e) { post({ type: 'sceneExport', requestId, error: String(e && (e.stack || e.message) || e) }); }
+  },
+};
+window.sceneEditor = api;
+
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  if (mixer) mixer.update(dt);
+  orbit.update();
+  renderer.render(scene, camera);
+});
+post({ type: 'sceneReady' });
+</script>
+</body>
+</html>

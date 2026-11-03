@@ -1,0 +1,20 @@
+# LoRA on every linear layer of all 32 blocks; answers only (prompt masked).
+fine_tune_type: lora
+num_layers: -1
+batch_size: 1
+learning_rate: 5.0e-5
+lr_schedule:
+  name: cosine_decay
+  warmup: 20
+  arguments: [5.0e-5, 400, 5.0e-6]
+max_seq_length: 16500
+mask_prompt: true
+grad_checkpoint: true
+steps_per_report: 10
+steps_per_eval: 100
+val_batches: 6
+save_every: 50
+lora_parameters:
+  rank: 16
+  scale: 8.0
+  dropout: 0.05
