@@ -21,6 +21,23 @@ struct ForgeSchemeHandler: URLSchemeHandler {
             default: continuation.finish(throwing: URLError(.unsupportedURL)); return
             }
             guard var data = try? Data(contentsOf: file) else {
+                // A three.js add-on Sirpi does not bundle (picking and the live preview point every add-on here):
+                // fetch the one matching the bundled three.js from the CDN once and keep it.
+                if host == "app", let rel = ThreeAddons.relativePath(parts) {
+                    Task {
+                        do {
+                            let d = try await ThreeAddons.fetch(rel)
+                            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: [
+                                "Content-Type": "text/javascript", "Content-Length": String(d.count),
+                                "Access-Control-Allow-Origin": "*", "Cache-Control": "no-store",
+                            ])!
+                            continuation.yield(.response(resp))
+                            continuation.yield(.data(d))
+                            continuation.finish()
+                        } catch { continuation.finish(throwing: error) }
+                    }
+                    return
+                }
                 continuation.finish(throwing: URLError(.fileDoesNotExist)); return
             }
             // ?pick=1: the asset page with three.js swapped for the hooked copy and part picking added.
@@ -43,6 +60,33 @@ struct ForgeSchemeHandler: URLSchemeHandler {
             continuation.yield(.data(data))
             continuation.finish()
         }
+    }
+}
+
+/// three.js add-ons beyond the handful Sirpi bundles, fetched on first use at the bundled revision and cached.
+enum ThreeAddons {
+    static let version = "0.187.0"   // matches Resources/web/vendor/three (REVISION 187)
+    static let cache = Paths.support.appendingPathComponent("three-\(version)/examples/jsm", isDirectory: true)
+
+    /// "vendor/three/examples/jsm/geometries/RoundedBoxGeometry.js" → "geometries/RoundedBoxGeometry.js"
+    static func relativePath(_ parts: [String]) -> String? {
+        let prefix = ["vendor", "three", "examples", "jsm"]
+        guard parts.count > prefix.count, Array(parts.prefix(4)) == prefix,
+              parts.last?.hasSuffix(".js") == true else { return nil }
+        return parts.dropFirst(4).joined(separator: "/")
+    }
+
+    static func fetch(_ rel: String) async throws -> Data {
+        let local = cache.appendingPathComponent(rel)
+        if let d = try? Data(contentsOf: local) { return d }
+        guard let remote = URL(string: "https://cdn.jsdelivr.net/npm/three@\(version)/examples/jsm/\(rel)") else {
+            throw URLError(.badURL)
+        }
+        let (d, resp) = try await URLSession.shared.data(from: remote)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200, !d.isEmpty else { throw URLError(.fileDoesNotExist) }
+        try? FileManager.default.createDirectory(at: local.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? d.write(to: local, options: .atomic)
+        return d
     }
 }
 
