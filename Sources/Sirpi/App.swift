@@ -137,6 +137,11 @@ final class AppModel {
     var engineProblem: String? {
         let p = provider
         if p.kind == .local {
+            if downloader.fetchingTuned, case .ready = server.state {} else if downloader.fetchingTuned {
+                return "Downloading the 3D Coder model (\(Int(downloader.progress * 100))% of 2.4 GB). This happens once."
+            }
+            if let e = downloader.error, !NativeEngine.isMLXModel(Settings.modelPath),
+               !FileManager.default.fileExists(atPath: Settings.modelPath) { return e }
             switch server.state {
             case .ready: return nil
             case .starting: return "Loading the 3D Coder model into memory…"
@@ -179,9 +184,20 @@ final class AppModel {
         if printer.isConfigured { printer.connect() }
         CLIRunner.warmUp()
         Task { await clis.scan() }
-        if ProviderSettings.selected.kind == .local && UserDefaults.standard.bool(forKey: SettingKey.autoStartServer) {
+        downloader.fetchTunedIfNeeded { [weak self] in self?.tunedModelArrived() }
+        if ProviderSettings.selected.kind == .local && UserDefaults.standard.bool(forKey: SettingKey.autoStartServer)
+            && !downloader.fetchingTuned {
             await server.start()
         }
+    }
+
+    /// The first-launch download finished: use it unless the user already picked a model that exists.
+    private func tunedModelArrived() {
+        let chosen = UserDefaults.standard.persistentDomain(forName: Bundle.main.bundleIdentifier ?? "")?[SettingKey.modelPath] as? String
+        let chosenUsable = chosen.map { NativeEngine.isMLXModel($0) || FileManager.default.fileExists(atPath: $0) } ?? false
+        guard !chosenUsable else { return }
+        UserDefaults.standard.set(ModelDownloader.tunedPath, forKey: SettingKey.modelPath)
+        if ProviderSettings.selected.kind == .local { Task { await server.restart() } }
     }
 
     // MARK: navigation

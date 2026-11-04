@@ -600,6 +600,74 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
     static let repo = "https://huggingface.co/ccore/Qwen3.5-4B-GLB-3D-Coder/resolve/main/"
     static let files = ["Qwen3.5-4B-GLB-3D-Coder-Q8_0.gguf", "Qwen3.5-4B-GLB-3D-Coder-Q4_K_M.gguf"]
 
+    // MARK: the fine-tuned MLX model, fetched on first launch
+
+    static let tunedRepo = "https://huggingface.co/Chandrasekar/Qwen3.5-4B-GLB-3D-Coder-Sirpi-MLX-4bit/resolve/main/"
+    static let tunedFolder = "mlx-tuned-4bit"
+    /// Small files first; the weights last so a failure there leaves nothing half usable.
+    static let tunedFiles = ["config.json", "generation_config.json", "chat_template.jinja", "tokenizer_config.json",
+                             "tokenizer.json", "model.safetensors.index.json", "model.safetensors"]
+    static var tunedPath: String { Paths.defaultModelDir.appendingPathComponent(tunedFolder).path }
+    private static let fetchedKey = "tunedModelFetched"
+
+    /// True while the first-launch download runs; `progress` covers the whole model.
+    var fetchingTuned = false
+
+    /// On first launch, downloads the fine-tuned model unless it is already on disk. Runs once: a model the user
+    /// deletes later is not fetched again. A failed download is retried on the next launch.
+    func fetchTunedIfNeeded(onDone: @escaping () -> Void) {
+        let d = UserDefaults.standard
+        if NativeEngine.isMLXModel(Self.tunedPath) { d.set(true, forKey: Self.fetchedKey); return }
+        guard !d.bool(forKey: Self.fetchedKey) else { return }
+        fetchTuned(onDone: onDone)
+    }
+
+    /// Downloads the fine-tuned model now (first launch, or the Download button in Settings).
+    func fetchTuned(onDone: @escaping () -> Void) {
+        let d = UserDefaults.standard
+        guard !active else { return }
+        active = true; fetchingTuned = true; progress = 0; error = nil
+        Task {
+            do {
+                try await downloadTuned()
+                d.set(true, forKey: Self.fetchedKey)
+                onDone()
+            } catch {
+                self.error = "Could not download the 3D Coder model: \(error.localizedDescription). Sirpi will try again next launch."
+            }
+            active = false; fetchingTuned = false
+        }
+    }
+
+    private func downloadTuned() async throws {
+        let fm = FileManager.default
+        let final = URL(fileURLWithPath: Self.tunedPath)
+        // Downloaded into a side folder and renamed at the end, so a partial model never looks loadable.
+        let partial = Paths.defaultModelDir.appendingPathComponent(Self.tunedFolder + ".partial", isDirectory: true)
+        try fm.createDirectory(at: partial, withIntermediateDirectories: true)
+        // Rough split for the progress bar: the weights are ~99% of the bytes.
+        let weightShare = 0.99
+        for (i, f) in Self.tunedFiles.enumerated() {
+            let dest = partial.appendingPathComponent(f)
+            if f != "model.safetensors", fm.fileExists(atPath: dest.path) { continue }
+            guard let url = URL(string: Self.tunedRepo + f + "?download=true") else { throw URLError(.badURL) }
+            let isWeights = f == "model.safetensors"
+            let base = isWeights ? 1 - weightShare : (1 - weightShare) * Double(i) / Double(Self.tunedFiles.count - 1)
+            let watcher = ProgressWatcher { [weak self] p in
+                Task { @MainActor in self?.progress = isWeights ? base + weightShare * p : base }
+            }
+            let (tmp, resp) = try await URLSession.shared.download(from: url, delegate: watcher)
+            guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+                throw ForgeError("\(f): HTTP \((resp as? HTTPURLResponse)?.statusCode ?? 0)")
+            }
+            try? fm.removeItem(at: dest)
+            try fm.moveItem(at: tmp, to: dest)
+        }
+        try? fm.removeItem(at: final)
+        try fm.moveItem(at: partial, to: final)
+        progress = 1
+    }
+
     func download(_ file: String, onDone: @escaping () -> Void) {
         guard !active, let url = URL(string: Self.repo + file + "?download=true") else { return }
         try? FileManager.default.createDirectory(at: Paths.defaultModelDir, withIntermediateDirectories: true)
@@ -630,5 +698,16 @@ final class ModelDownloader: NSObject, URLSessionDownloadDelegate {
             if let error { self.error = error.localizedDescription } else { onDone?() }
             session.finishTasksAndInvalidate()
         }
+    }
+}
+
+/// Reports a single download's progress (0...1) to a closure.
+final class ProgressWatcher: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    private let report: (Double) -> Void
+    private var observation: NSKeyValueObservation?
+    init(_ report: @escaping (Double) -> Void) { self.report = report }
+
+    func urlSession(_ session: URLSession, didCreateTask task: URLSessionTask) {
+        observation = task.progress.observe(\.fractionCompleted) { [report] p, _ in report(p.fractionCompleted) }
     }
 }

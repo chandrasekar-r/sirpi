@@ -383,6 +383,12 @@ private struct LocalModelPane: View {
                 Text("MLX models run inside the app on the GPU: 4-bit is fastest, 6-bit is closest to the original. GGUF files run through llama-server.")
             }
             Section("Downloads") {
+                LabeledContent("MLX tuned 4-bit (recommended)") {
+                    if NativeEngine.isMLXModel(ModelDownloader.tunedPath) { Text("Downloaded").foregroundStyle(.secondary) } else {
+                        Button("Download") { app.downloader.fetchTuned { modelPath = ModelDownloader.tunedPath } }
+                            .disabled(app.downloader.active)
+                    }
+                }
                 ForEach(ModelDownloader.files, id: \.self) { f in
                     let exists = FileManager.default.fileExists(atPath: Paths.defaultModelDir.appendingPathComponent(f).path)
                     LabeledContent(quant(f) + " GGUF") {
