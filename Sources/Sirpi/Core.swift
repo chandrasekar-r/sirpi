@@ -66,9 +66,10 @@ enum Settings {
         d.register(defaults: [
             SettingKey.llamaServerPath: ["/opt/homebrew/bin/llama-server", "/usr/local/bin/llama-server"]
                 .first { FileManager.default.isExecutableFile(atPath: $0) } ?? "/opt/homebrew/bin/llama-server",
-            SettingKey.modelPath: NativeEngine.isMLXModel(Paths.defaultModelDir.appendingPathComponent("mlx-4bit").path)
-                ? Paths.defaultModelDir.appendingPathComponent("mlx-4bit").path
-                : Paths.defaultModelDir.appendingPathComponent("Qwen3.5-4B-GLB-3D-Coder-Q8_0.gguf").path,
+            // The fine-tuned weights when present (more working prints and games, half the tokens), else the original.
+            SettingKey.modelPath: ["mlx-tuned-4bit", "mlx-4bit"].map { Paths.defaultModelDir.appendingPathComponent($0).path }
+                .first { NativeEngine.isMLXModel($0) }
+                ?? Paths.defaultModelDir.appendingPathComponent("Qwen3.5-4B-GLB-3D-Coder-Q8_0.gguf").path,
             SettingKey.port: 8089,
             SettingKey.contextSize: 32768,
             SettingKey.enableThinking: true,
