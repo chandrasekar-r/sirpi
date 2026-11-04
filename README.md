@@ -22,14 +22,17 @@ Runs a fine-tuned model on your Mac's GPU, or the coding agents and AI services 
 
 - **Three purposes.** *Game asset* (a GLB for Godot or any engine), *3D print* (one solid, watertight object at real size in millimetres, sized to fit your printer), or *3D scene* (a whole place such as a street or a room, in metres, with every object separately named).
 - **Text or picture in.** Describe what you want, or attach a reference picture. Before generating, Sirpi asks a few follow-up questions (style, size, colours, purpose) so the result matches what you had in mind.
-- **Local first.** The bundled 3D Coder ([Qwen3.5-4B GLB 3D Coder](https://huggingface.co/ccore/Qwen3.5-4B-GLB-3D-Coder)) runs inside the app on the GPU with [MLX](https://github.com/ml-explore/mlx-swift): about 80 tokens per second on an M4 Pro, no server, nothing leaves your Mac.
+- **Local first.** Sirpi's own fine-tune of the 3D Coder ([Qwen3.5-4B GLB 3D Coder, Sirpi tune](https://huggingface.co/Chandrasekar/Qwen3.5-4B-GLB-3D-Coder-Sirpi-MLX-4bit), based on [ccore's model](https://huggingface.co/ccore/Qwen3.5-4B-GLB-3D-Coder)) downloads on first launch (2.4 GB) and runs inside the app on the GPU with [MLX](https://github.com/ml-explore/mlx-swift): about 80 tokens per second on an M4 Pro, no server, nothing leaves your Mac. Compared with the original it makes working print models far more often (16 of 20 test prompts against 11) in half the code.
 - **Or bring your own model.** Coding-agent CLIs you are already signed in to (Claude Code, opencode, Grok CLI, Kimi Code, Cursor Agent, Codex, Gemini CLI, pi) are detected automatically and use their own logins. Cloud APIs (Claude, OpenAI, Gemini, xAI, Cloudflare Workers AI, OpenRouter, Groq, DeepSeek, Mistral) and local servers (Ollama, LM Studio) work with a key or URL.
 - **Customise.** Select objects in a scene, move, rotate and scale them with a gizmo, recolour materials, duplicate, delete, and insert assets from your library. Every change is a new version.
 - **Real-world assets.** Browse and import the 2,677 [NVIDIA SimReady](https://huggingface.co/datasets/nvidia/simready-assets) assets (OpenUSD with PBR materials), converted to GLB on demand.
 - **Matches your picture.** After an asset made from a picture, Sirpi renders it from four sides next to the picture, asks a vision model what differs, and refines it once automatically.
 - **Fast fixes.** Fixes and refinements come back as small edits to the existing code instead of a whole new file, so fixing a script error takes seconds. A generation that was stopped or cut off can be continued from where it ended.
+- **Point at what to change.** Turn on *Select part*, click a part of the model, and say what should change: the request names that part and the code that builds it, so the rest stays as it is. Every asset keeps one conversation, with each request, error fix and version in order.
+- **Live preview.** While the code is being written, Sirpi runs the part that is finished and shows the model taking shape.
 - **Detail on demand.** *Smooth & add detail* subdivides meshes so curves become smooth while sharp edges stay crisp.
-- **Print on a Bambu Lab printer.** Prepare repairs meshes into watertight solids, matches colours to your AMS, slices with Bambu Studio and sends the job over the local network (LAN mode).
+- **Print on a Bambu Lab printer.** Prepare repairs meshes into watertight solids, matches colours to your AMS, slices with Bambu Studio using the preset of the spool actually loaded in each AMS slot, and sends the job over the local network (LAN mode). Watch the print on the printer's camera.
+- **Print check.** Before and after slicing, Sirpi looks for overhangs, long bridges, islands that need support, warping and detaching risks, under-extrusion, stringing and more, explains each one and offers one-click fixes to the slice or the model. Supports are added only when the model needs them. STL files are checked and repaired (holes, flipped faces) before slicing.
 - **Turntable videos.** Render a seamless 360° video of any asset: 720p to 4K, square or vertical, studio, soft or dramatic lighting, and a transparent background (HEVC with alpha) for trailers and editors.
 - **Export anywhere.** GLB (optionally with lightmap UVs for Godot's LightmapGI), OBJ with colours, a copy straight into a Godot project, Blender (open, or save a `.blend`), STL and sliced 3MF.
 
@@ -51,12 +54,12 @@ Requirements: an Apple silicon Mac and macOS 27 or later. 16 GB of memory is eno
 
 Pick one or more:
 
-- **Local 3D Coder (free, private).** Needs [uv](https://docs.astral.sh/uv/), about 4 GB to download and 20 GB free while converting:
+- **Local 3D Coder (free, private).** Downloaded automatically on first launch (2.4 GB), or from **Settings › Model › Downloads**. To use ccore's original model instead, the same section downloads its GGUF files, or convert it to MLX with [uv](https://docs.astral.sh/uv/) (about 4 GB to download and 20 GB free while converting):
   ```sh
   tools/model/setup_local_model.sh          # MLX 4-bit, the fastest
   tools/model/setup_local_model.sh --6bit   # also MLX 6-bit, closest to the original
   ```
-  Then choose it in **Settings › Local Model**.
+  Then choose it in **Settings › Model**.
 - **A coding agent you already use.** Install and sign in to it once in Terminal; Sirpi finds it in **Settings › Coding Agents**.
 - **A cloud API.** Add a key in **Settings › Cloud APIs**. Keys are stored in a file only your user account can read.
 
@@ -95,7 +98,7 @@ With the local model, generation never leaves your Mac. Coding agents and cloud 
 
 ## Credits
 
-- 3D Coder model by [ccore](https://huggingface.co/ccore/Qwen3.5-4B-GLB-3D-Coder), based on [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) (Apache-2.0).
+- 3D Coder model by [ccore](https://huggingface.co/ccore/Qwen3.5-4B-GLB-3D-Coder), based on [Qwen3.5-4B](https://huggingface.co/Qwen/Qwen3.5-4B) (Apache-2.0). Sirpi's fine-tune is published at [Chandrasekar/Qwen3.5-4B-GLB-3D-Coder-Sirpi-MLX-4bit](https://huggingface.co/Chandrasekar/Qwen3.5-4B-GLB-3D-Coder-Sirpi-MLX-4bit) under the same licence.
 - [three.js](https://threejs.org), [Manifold](https://github.com/elalish/manifold), [MLX](https://github.com/ml-explore), [swift-transformers](https://github.com/huggingface/swift-transformers).
 - [NVIDIA SimReady](https://huggingface.co/datasets/nvidia/simready-assets) assets (CC-BY-4.0).
 
