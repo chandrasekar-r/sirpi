@@ -21,6 +21,11 @@ struct SirpiApp: App {
         .windowToolbarStyle(.unified)
         .commands { ForgeCommands(app: app) }
 
+        Window("Printer Camera", id: "camera") {
+            CameraWindow().environment(app).preferredColorScheme(.dark)
+        }
+        .defaultSize(width: 960, height: 580)
+
         Window("Sirpi Help", id: "help") {
             HelpView().preferredColorScheme(.dark)
         }
@@ -763,18 +768,6 @@ final class AppModel {
         NSWorkspace.shared.open([url], withApplicationAt: URL(fileURLWithPath: Settings.bambuStudioPath),
                                 configuration: NSWorkspace.OpenConfiguration())
     }
-
-    func openCamera() {
-        let code = printer.accessCode
-        guard let url = URL(string: "rtsps://bblp:\(code)@\(Settings.printerIP):322/streaming/live/1") else { return }
-        for bundle in ["org.videolan.vlc", "com.colliderli.iina"] {
-            if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) {
-                NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
-                return
-            }
-        }
-        alert = "Install VLC or IINA to watch the printer camera."
-    }
 }
 
 // MARK: - Root
@@ -1473,7 +1466,7 @@ struct ForgeCommands: Commands {
             Toggle("Chamber Light", isOn: Binding(get: { p.status.chamberLight }, set: { p.setLight($0) }))
                 .keyboardShortcut("l", modifiers: [.command, .option]).disabled(p.connection != .connected)
             Button("Home Axes") { p.home() }.disabled(p.connection != .connected || p.status.isPrinting)
-            Button("Watch Camera") { app.openCamera() }.keyboardShortcut("c", modifiers: [.command, .option]).disabled(!p.isConfigured)
+            WatchCameraButton().keyboardShortcut("c", modifiers: [.command, .option]).disabled(!p.isConfigured)
             Divider()
             Button("Find Printers on Network") { app.stage = .print; app.discovery.scan() }
             SettingsLink { Text("Printer Settings…") }

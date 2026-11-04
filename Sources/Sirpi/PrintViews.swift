@@ -66,7 +66,7 @@ struct JobView: View {
             HStack(spacing: 12) {
                 Image(systemName: "video")
                 Text("Chamber camera")
-                Button("Watch") { app.openCamera() }.buttonStyle(.glass)
+                WatchCameraButton(title: "Watch").buttonStyle(.glass)
             }
             .padding(.leading, 14).padding(.trailing, 8).frame(height: 44)
             .glassEffect(.regular, in: .capsule)
