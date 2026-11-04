@@ -35,6 +35,8 @@ final class PrepState {
     var slots: [ColorSlot] = []
     var planned: [PlannedFilament] = []
     var result: SliceResult?
+    var check: PrintReport?
+    var reviewingPrint = false
     var lastReport: RepairReport?
     var variants: [ColorVariant] = []
     var comparing = false
@@ -52,6 +54,10 @@ final class PrepState {
         assetID = a.id
         ready = false
         result = Slicer.loadResult(a)
+        check = result == nil ? nil : PrintCheckStore.load(a)
+        // Fixes from the print check belong to the asset they were made for.
+        options.processOverrides = [:]; options.filamentOverrides = [:]
+        options.supportMode = SliceOptions.savedSupportMode
         variants = []
         clusters = []; planned = []; size = [0, 0, 0]; triangles = 0; warnings = []
         if options.process.isEmpty || !slicer.processes.contains(options.process) {
@@ -359,6 +365,7 @@ struct SliceInspector: View {
                     if let r = prep.result { result(r) } else {
                         Text("Not sliced yet").font(.headline).padding(16).frame(maxWidth: .infinity, alignment: .leading)
                     }
+                    if prep.result != nil { PrintCheckSection() }
 
                     if prep.multicolor || !prep.variants.isEmpty {
                         InspectorSection(title: "Colour options", trailing: prep.comparing ? AnyView(ProgressView().controlSize(.small)) : nil) {
@@ -388,10 +395,11 @@ struct SliceInspector: View {
                             }.labelsHidden().fixedSize()
                         }
                         LabeledContent("Supports") {
-                            Picker("", selection: Binding(get: { prep.options.supports ? prep.options.supportType : "off" },
-                                                          set: { v in prep.options.supports = v != "off"; if v != "off" { prep.options.supportType = v } })) {
-                                Text("Tree, automatic").tag("tree(auto)")
-                                Text("Normal, automatic").tag("normal(auto)")
+                            Picker("", selection: Binding(get: { prep.options.supportMode },
+                                                          set: { prep.options.supportMode = $0; UserDefaults.standard.set($0, forKey: SliceOptions.supportModeKey) })) {
+                                Text("Only if needed").tag("auto")
+                                Text("Tree, always").tag("tree(auto)")
+                                Text("Normal, always").tag("normal(auto)")
                                 Text("Off").tag("off")
                             }.labelsHidden().fixedSize()
                         }
@@ -404,6 +412,7 @@ struct SliceInspector: View {
                             Stepper("\(prep.options.wallLoops)", value: $prep.options.wallLoops, in: 1...6).monospacedDigit()
                         }
                         LabeledContent("Brim") { Toggle("", isOn: $prep.options.brim).toggleStyle(.switch).tint(Theme.accent).labelsHidden() }
+                        PresetOverridesView()
                     }
                     .labeledContentStyle(OneLineLabel())
                 }

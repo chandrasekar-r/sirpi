@@ -4,11 +4,31 @@ import Observation
 struct SliceOptions: Equatable {
     var process: String = "0.20mm Standard @BBL P2S"
     var filament: String = "Bambu PLA Basic @BBL P2S"
-    var supports: Bool = true
+    /// What the user picked: "auto" (only when the model needs them), "tree(auto)", "normal(auto)" or "off".
+    var supportMode: String = SliceOptions.savedSupportMode
+    /// Resolved from `supportMode` just before slicing.
+    var supports: Bool = false
     var supportType: String = "tree(auto)"
     var infill: Int = 15
     var wallLoops: Int = 2
     var brim: Bool = false
+    /// Preset values changed by print-check fixes, by Bambu Studio key.
+    var processOverrides: [String: String] = [:]
+    var filamentOverrides: [String: String] = [:]
+
+    static let supportModeKey = "supportMode"
+    static var savedSupportMode: String { UserDefaults.standard.string(forKey: supportModeKey) ?? "auto" }
+
+    /// Supports for this slice: in automatic mode, on only when the model has parts in mid-air or steep undersides.
+    func resolved(needsSupports: Bool) -> SliceOptions {
+        var o = self
+        switch supportMode {
+        case "off": o.supports = false
+        case "auto": o.supports = needsSupports; o.supportType = "tree(auto)"
+        default: o.supports = true; o.supportType = supportMode
+        }
+        return o
+    }
 }
 
 /// One filament of a (possibly multi-colour) print: its STL and the slot it is meant for.
@@ -140,6 +160,7 @@ final class Slicer {
         process["wall_loops"] = String(o.wallLoops)
         process["brim_type"] = o.brim ? "outer_only" : "no_brim"
         if o.brim { process["brim_width"] = "5" }
+        for (k, v) in o.processOverrides { process[k] = Self.typed(v, like: process[k]) }
         if parts.count > 1 {
             // purge into sparse infill / supports instead of only the prime tower
             process["flush_into_infill"] = "1"
@@ -177,6 +198,7 @@ final class Slicer {
         for (i, part) in parts.enumerated() {
             var f = try flatten(kind: "filament", name: preset(forType: part.type, fallback: o.filament))
             f["filament_colour"] = [part.hex]
+            for (k, v) in o.filamentOverrides { f[k] = Self.typed(v, like: f[k]) }
             filamentFiles.append(try write(f, "filament_\(i + 1).json").path)
             objects.append(["path": part.stl.path, "count": 1, "filaments": [i + 1], "assemble_index": [1],
                             "pos_x": [layout?.shiftX ?? 0], "pos_y": [layout?.shiftY ?? 0], "pos_z": [0]])
@@ -258,6 +280,12 @@ final class Slicer {
             filaments: uses, changes: changes ?? 0, arrangeRotation: rotation)
         try? FileManager.default.removeItem(at: work)
         return result
+    }
+
+    /// Preset values are a string or a list (one per extruder); keep the shape Bambu Studio expects.
+    private static func typed(_ v: String, like old: Any?) -> Any {
+        if let list = old as? [Any] { return Array(repeating: v, count: max(1, list.count)) }
+        return v
     }
 
     /// CLI exports leave printer_model_id empty; set it to the P2S id (N7) like the GUI does.

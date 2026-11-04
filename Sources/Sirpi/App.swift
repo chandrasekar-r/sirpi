@@ -491,11 +491,18 @@ final class AppModel {
             guard !fils.isEmpty else { throw ForgeError("Nothing to print: no parts selected.") }
             let parts = try writeFilaments(fils, to: a.dir.appendingPathComponent("print", isDirectory: true))
             library.write(fils.count == 1 ? fils[0].data : combinedSTL(fils.map(\.data)), to: a.stlURL)
+            prep.busy = "Checking overhangs…"
+            tasks.update(task, detail: "Checking overhangs and contact with the plate")
+            let stls = parts.map(\.stl)
+            let mesh = await Task.detached(priority: .userInitiated) { MeshCheck.analyse(stls) }.value
+            let options = prep.options.resolved(needsSupports: mesh?.needsSupports ?? true)
             prep.busy = fils.count > 1 ? "Slicing \(fils.count) colours…" : "Slicing…"
-            tasks.update(task, detail: "Bambu Studio, \(fils.count) colour\(fils.count == 1 ? "" : "s")")
-            let r = try await slicer.slice(filaments: parts, options: prep.options, outDir: a.dir, outName: a.threeMFURL.lastPathComponent)
+            tasks.update(task, detail: "Bambu Studio, \(fils.count) colour\(fils.count == 1 ? "" : "s")\(options.supports ? ", with supports" : "")")
+            let r = try await slicer.slice(filaments: parts, options: options, outDir: a.dir, outName: a.threeMFURL.lastPathComponent)
             Slicer.save(r, for: a)
             prep.result = r
+            prep.busy = "Checking the slice…"
+            await runPrintCheck(a, mesh: mesh, options: options, result: r)
             library.touch()
             loadGcodePreview(a)
             tasks.finish(task, success: true, title: "\(a.shortTitle) sliced",
@@ -519,7 +526,10 @@ final class AppModel {
                 let dir = a.dir.appendingPathComponent("variants/\(k)", isDirectory: true)
                 try? FileManager.default.removeItem(at: dir)
                 let parts = try writeFilaments(fils, to: dir)
-                let r = try await slicer.slice(filaments: parts, options: prep.options, outDir: dir, outName: "variant.gcode.3mf")
+                let stls = parts.map(\.stl)
+                let mesh = await Task.detached(priority: .userInitiated) { MeshCheck.analyse(stls) }.value
+                let options = prep.options.resolved(needsSupports: mesh?.needsSupports ?? true)
+                let r = try await slicer.slice(filaments: parts, options: options, outDir: dir, outName: "variant.gcode.3mf")
                 prep.variants.append(ColorVariant(colors: fils.count, hexes: fils.map(\.hex), seconds: r.seconds, grams: r.weightGrams, changes: r.changes ?? 0))
             } catch {
                 tasks.finish(task, success: false, detail: error.localizedDescription); return
@@ -527,6 +537,66 @@ final class AppModel {
         }
         try? FileManager.default.removeItem(at: a.dir.appendingPathComponent("variants"))
         tasks.finish(task, success: true, title: "Compared colour counts", detail: "\(prep.variants.count) options for \(a.shortTitle)")
+    }
+
+    // MARK: print check
+
+    /// Predicts print problems from the model and the G-code, and saves the report beside the slice.
+    func runPrintCheck(_ a: Asset, mesh: MeshStats?, options: SliceOptions, result: SliceResult) async {
+        let url = a.gcodeURL
+        let gcode = await Task.detached(priority: .userInitiated) { GcodeCheck.analyse(url) }.value
+        let preset = result.filaments?.count ?? 0 > 1 ? options.filament : (gcode?.settings["filament_settings_id"]
+            .map { $0.split(separator: ";").first.map(String.init) ?? $0 }?.trimmingCharacters(in: CharacterSet(charactersIn: "\"")) ?? options.filament)
+        let material = PrintRules.material(fromPreset: result.filamentType.isEmpty ? preset : result.filamentType)
+        let ctx = PrintRules.Context(mesh: mesh, gcode: gcode, material: material, filamentPreset: preset,
+                                     supportMode: options.supportMode, supportsOn: options.supports, brim: options.brim,
+                                     noSupportsWanted: a.fullRequest.contains("Design to print without supports"))
+        let report = PrintReport(findings: PrintRules.findings(ctx), mesh: mesh, gcode: gcode, material: material, checkedAt: Date())
+        PrintCheckStore.save(report, for: a)
+        if prep.assetID == a.id { prep.check = report }
+    }
+
+    /// Applies a print-check fix: slicer settings are changed and the asset re-sliced; model fixes go to the model.
+    func applyPrintFix(_ fix: PrintFix) async {
+        if let text = fix.refine {
+            refine(text)
+            return
+        }
+        guard let settings = fix.settings else { return }
+        for (k, v) in settings {
+            switch k {
+            case "supports":
+                prep.options.supportMode = v
+                UserDefaults.standard.set(v, forKey: SliceOptions.supportModeKey)
+            case "brim": prep.options.brim = v == "1"
+            case "wallLoops": if let n = Int(v) { prep.options.wallLoops = n }
+            case "infill": if let n = Int(v) { prep.options.infill = n }
+            default:
+                if k.hasPrefix("p.") { prep.options.processOverrides[String(k.dropFirst(2))] = v }
+                else if k.hasPrefix("f.") { prep.options.filamentOverrides[String(k.dropFirst(2))] = v }
+            }
+        }
+        await slice()
+    }
+
+    /// Has a language model read the measurements and suggest further fixes, limited to settings Sirpi can apply.
+    func reviewPrint() async {
+        guard let a = selectedAsset, let report = prep.check, !prep.reviewingPrint else { return }
+        prep.reviewingPrint = true
+        defer { prep.reviewingPrint = false }
+        let task = tasks.start(.slice, title: "Reviewing the print of \(a.shortTitle)", detail: "Asking an AI model", assetID: a.id, stage: .slice)
+        do {
+            let r = try await PrintReview.review(report: report, options: prep.options, request: a.fullRequest)
+            var updated = report
+            updated.findings.removeAll { $0.source != nil }
+            updated.findings += r.findings
+            updated.aiSummary = r.summary
+            PrintCheckStore.save(updated, for: a)
+            if prep.assetID == a.id { prep.check = updated }
+            tasks.finish(task, success: true, title: "Print review ready", detail: r.findings.isEmpty ? "No further changes suggested" : "\(r.findings.count) suggestion\(r.findings.count == 1 ? "" : "s")")
+        } catch {
+            tasks.finish(task, success: false, title: "Print review failed", detail: error.localizedDescription)
+        }
     }
 
     func useVariant(_ v: ColorVariant) async {
