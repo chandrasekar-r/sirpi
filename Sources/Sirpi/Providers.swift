@@ -63,7 +63,7 @@ enum Providers {
                  note: "Runs `grok -p` headless with web search off. Uses your Grok login."),
         Provider(id: "kimi", name: "Kimi Code", kind: .cli, symbol: "terminal", needsKey: false,
                  executable: "kimi", cliFormat: .kimi,
-                 note: "Runs `kimi -p` with your Kimi login. Models come from your Kimi config (k3, kimi-for-coding…)."),
+                 note: "Runs `kimi acp` with your Kimi login and streams the answer. Models come from your Kimi config (k3, k3.1-pro, kimi-for-coding…)."),
         Provider(id: "pi", name: "pi", kind: .cli, symbol: "terminal", needsKey: false,
                  executable: "pi", cliFormat: .plain,
                  note: "Runs `pi -p`. Install: npm i -g @mariozechner/pi-coding-agent"),
@@ -549,7 +549,10 @@ enum CLIRunner {
 
     static func stream(_ p: Provider, messages: [[String: String]], image: ReferenceImage? = nil,
                        systemOverride: String? = nil, modelOverride: String? = nil) -> AsyncThrowingStream<Piece, Error> {
-        AsyncThrowingStream { cont in
+        if p.id == "kimi" {
+            return KimiACP.stream(p, messages: messages, image: image, systemOverride: systemOverride, modelOverride: modelOverride)
+        }
+        return AsyncThrowingStream { cont in
             let proc = Process()
             let task = Task.detached(priority: .userInitiated) {
                 let exe = ProviderSettings.executable(p)
