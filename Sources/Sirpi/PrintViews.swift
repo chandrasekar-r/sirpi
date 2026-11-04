@@ -244,12 +244,12 @@ struct PrinterSetupForm: View {
             }
             ForEach(app.discovery.found) { d in
                 Button { ip = d.ip; serial = d.serial } label: {
-                    Label("\(d.name), \(d.model), \(d.ip)", systemImage: "printer")
+                    Label("Use \(d.name) at \(d.ip)", systemImage: "printer")
                 }
                 .buttonStyle(.link)
             }
             if !app.discovery.scanning && app.discovery.found.isEmpty && app.discovery.didScanOnce {
-                Text("No printer announced itself. Check that it is on and on this network.").foregroundStyle(.secondary).font(.callout)
+                Text("No printer answered. Check that it is switched on and on the same Wi-Fi network as this Mac.").foregroundStyle(.secondary).font(.callout)
             }
             if case .failed(let why) = p.connection {
                 Label(why, systemImage: "exclamationmark.triangle").foregroundStyle(Theme.warning).fixedSize(horizontal: false, vertical: true)

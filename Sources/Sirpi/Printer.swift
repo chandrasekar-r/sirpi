@@ -468,35 +468,71 @@ final class PrinterDiscovery {
         }
     }
 
+    /// Asks printers to answer (SSDP M-SEARCH) from a free port, so it works while Bambu Studio holds port 2021, and
+    /// also listens for their periodic announcements on 2021 when that port is free.
     nonisolated private static func listen(seconds: Double) -> [DiscoveredPrinter] {
-        let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-        guard fd >= 0 else { return [] }
-        defer { close(fd) }
-        var yes: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
-        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, socklen_t(MemoryLayout<Int32>.size))
-        var tv = timeval(tv_sec: 1, tv_usec: 0)
-        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
-        var addr = sockaddr_in()
-        addr.sin_family = sa_family_t(AF_INET); addr.sin_port = in_port_t(2021).bigEndian; addr.sin_addr.s_addr = INADDR_ANY
-        let ok = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
-        guard ok == 0 else { return [] }
+        func udpSocket(port: UInt16) -> Int32? {
+            let fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
+            guard fd >= 0 else { return nil }
+            var yes: Int32 = 1
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+            setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &yes, socklen_t(MemoryLayout<Int32>.size))
+            setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, socklen_t(MemoryLayout<Int32>.size))
+            var addr = sockaddr_in()
+            addr.sin_family = sa_family_t(AF_INET); addr.sin_port = in_port_t(port).bigEndian; addr.sin_addr.s_addr = INADDR_ANY
+            let ok = withUnsafePointer(to: &addr) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+            if ok != 0 { close(fd); return nil }
+            return fd
+        }
+        guard let search = udpSocket(port: 0) else { return [] }
+        let passive = udpSocket(port: 2021)   // nil when another app (e.g. Bambu Studio) holds the port
+        defer { close(search); if let passive { close(passive) } }
+
+        let query = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1990\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\n"
+            + "ST: urn:bambulab-com:device:3dprinter:1\r\n\r\n"
+        func send(to ip: String, port: UInt16) {
+            var dst = sockaddr_in()
+            dst.sin_family = sa_family_t(AF_INET); dst.sin_port = in_port_t(port).bigEndian
+            inet_pton(AF_INET, ip, &dst.sin_addr)
+            let bytes = Array(query.utf8)
+            _ = withUnsafePointer(to: &dst) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                sendto(search, bytes, bytes.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }
+        }
+        func searchAll() {
+            for (ip, port) in [("239.255.255.250", UInt16(1990)), ("239.255.255.250", 2021), ("255.255.255.255", 2021), ("255.255.255.255", 1990)] {
+                send(to: ip, port: port)
+            }
+        }
+
         var out: [String: DiscoveredPrinter] = [:]
         let end = Date().addingTimeInterval(seconds)
+        var lastSearch = Date.distantPast
         var buf = [UInt8](repeating: 0, count: 4096)
         while Date() < end {
-            var from = sockaddr_in(); var len = socklen_t(MemoryLayout<sockaddr_in>.size)
-            let n = withUnsafeMutablePointer(to: &from) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(fd, &buf, buf.count, 0, $0, &len) } }
-            guard n > 0 else { continue }
-            let text = String(decoding: buf[0..<n], as: UTF8.self)
-            func header(_ k: String) -> String? {
-                text.split(separator: "\r\n").first { $0.lowercased().hasPrefix(k.lowercased() + ":") }
-                    .map { String($0.split(separator: ":", maxSplits: 1)[1]).trimmingCharacters(in: .whitespaces) }
+            if Date().timeIntervalSince(lastSearch) > 3 { searchAll(); lastSearch = Date() }
+            var fds = [pollfd(fd: search, events: Int16(POLLIN), revents: 0)]
+            if let passive { fds.append(pollfd(fd: passive, events: Int16(POLLIN), revents: 0)) }
+            guard poll(&fds, nfds_t(fds.count), 500) > 0 else { continue }
+            for p in fds where p.revents & Int16(POLLIN) != 0 {
+                var from = sockaddr_in(); var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+                let n = withUnsafeMutablePointer(to: &from) { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { recvfrom(p.fd, &buf, buf.count, 0, $0, &len) } }
+                guard n > 0 else { continue }
+                if let printer = parse(String(decoding: buf[0..<n], as: UTF8.self), from: String(cString: inet_ntoa(from.sin_addr))) {
+                    out[printer.serial] = printer
+                }
             }
-            guard let usn = header("USN"), let model = header("DevModel.bambu.com") else { continue }
-            let ip = header("Location") ?? String(cString: inet_ntoa(from.sin_addr))
-            out[usn] = DiscoveredPrinter(ip: ip, serial: usn, model: model, name: header("DevName.bambu.com") ?? model)
         }
         return Array(out.values)
+    }
+
+    /// Reads a Bambu SSDP announcement or search reply. Our own M-SEARCH echoes back too; it has no device model, so it is skipped.
+    nonisolated static func parse(_ text: String, from sender: String) -> DiscoveredPrinter? {
+        func header(_ k: String) -> String? {
+            text.split(separator: "\r\n").first { $0.lowercased().hasPrefix(k.lowercased() + ":") }
+                .map { String($0.split(separator: ":", maxSplits: 1)[1]).trimmingCharacters(in: .whitespaces) }
+        }
+        guard let usn = header("USN"), let model = header("DevModel.bambu.com") else { return nil }
+        let location = header("Location").flatMap { $0.isEmpty ? nil : $0 } ?? sender
+        return DiscoveredPrinter(ip: location, serial: usn, model: model, name: header("DevName.bambu.com") ?? model)
     }
 }
