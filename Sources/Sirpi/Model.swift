@@ -227,6 +227,7 @@ final class Generator {
         var prompt: String
         var base: Asset?
         var refinement: String?
+        var label: String?
         var image: ReferenceImage?
         var attachment: ReferenceImage?
         var context: String?
@@ -276,14 +277,37 @@ final class Generator {
     var tokensPerSecond: Double { elapsed > 0.5 ? Double(tokens) / elapsed : 0 }
 
     /// Starts a generation. `base` + `refinement` turns it into a follow-up edit of an existing asset.
-    func generate(prompt: String, base: Asset? = nil, refinement: String? = nil, image: ReferenceImage? = nil,
+    /// The asset a running refinement started from (nil for a new asset).
+    private(set) var baseID: String?
+    /// What the new version is called in the history; the model may get a longer instruction.
+    private var saveLabel: String?
+
+    /// The page as written so far, for the live preview: finished edit blocks applied to the base in patch mode,
+    /// otherwise the partial file.
+    var liveSource: String? {
+        if mode == .patch && (content.isEmpty || Patch.looksLikePatch(content)) {
+            let blocks = Patch.parse(content)
+            guard !blocks.isEmpty else { return baseHTML }
+            return Patch.apply(blocks, to: baseHTML).html
+        }
+        let text = prefix + content
+        if let r = text.range(of: "```html", options: .caseInsensitive) { return String(text[r.upperBound...]) }
+        if let r = text.range(of: "<!doctype", options: .caseInsensitive) ?? text.range(of: "<html", options: .caseInsensitive) {
+            return String(text[r.lowerBound...])
+        }
+        return nil
+    }
+
+    func generate(prompt: String, base: Asset? = nil, refinement: String? = nil, label: String? = nil, image: ReferenceImage? = nil,
                   attachment: ReferenceImage? = nil, context: String? = nil, fullRewrite: Bool = false,
                   library: AssetLibrary, onDone: @escaping (Asset) -> Void) {
         cancel()
+        baseID = refinement == nil ? nil : base?.id
+        saveLabel = label
         reasoning = ""; content = ""; tokens = 0; started = Date(); finished = nil
         thinkingStarted = nil; writingStarted = nil; reasoningTokens = 0; codeTokens = 0
         phase = .waiting
-        title = refinement ?? prompt
+        title = label ?? refinement ?? prompt
         prefix = ""
         mode = .fresh
         statusNote = nil
@@ -307,7 +331,7 @@ final class Generator {
         reference = image
         self.attachment = attachment
         briefToSave = base == nil ? context : nil
-        last = Request(messages: messages, prompt: prompt, base: base, refinement: refinement, image: image,
+        last = Request(messages: messages, prompt: prompt, base: base, refinement: refinement, label: label, image: image,
                        attachment: attachment, context: context, purpose: purpose, onDone: onDone,
                        providerID: ProviderSettings.selected.id)
         lastLibrary = library
@@ -526,7 +550,7 @@ final class Generator {
     private func rewriteAfterFailedPatch() {
         guard let req = last, let library = lastLibrary else { phase = .failed("The fix could not be applied."); return }
         let note = statusNote
-        generate(prompt: req.prompt, base: req.base, refinement: req.refinement, image: req.image, attachment: req.attachment,
+        generate(prompt: req.prompt, base: req.base, refinement: req.refinement, label: req.label, image: req.image, attachment: req.attachment,
                  context: req.context, fullRewrite: true, library: library, onDone: req.onDone)
         statusNote = note
     }
@@ -534,7 +558,7 @@ final class Generator {
     private func save(html: String, prompt: String, base: Asset?, refinement: String?, library: AssetLibrary,
                       onDone: @escaping (Asset) -> Void) {
         do {
-            let a = try library.create(prompt: prompt, html: html, parent: base, refinement: refinement,
+            let a = try library.create(prompt: prompt, html: html, parent: base, refinement: saveLabel ?? refinement,
                                        seconds: elapsed, tokens: tokens, engine: engineLabel, reference: reference?.jpeg,
                                        purpose: purpose.rawValue, brief: briefToSave)
             phase = .done

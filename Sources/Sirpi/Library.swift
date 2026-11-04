@@ -39,6 +39,8 @@ struct Asset: Codable, Identifiable, Hashable {
 
     /// forge:// URLs served by ForgeSchemeHandler.
     var pageURL: URL { URL(string: "forge://lib/\(id)/asset.html")! }
+    /// The page with part picking (three.js hooked so clicks find meshes).
+    var pickURL: URL { URL(string: "forge://lib/\(id)/asset.html?pick=1")! }
 
     var title: String {
         let base = refinement.map { "↳ \($0)" } ?? prompt

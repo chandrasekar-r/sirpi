@@ -20,8 +20,12 @@ struct ForgeSchemeHandler: URLSchemeHandler {
             case "app": file = parts.reduce(Paths.web) { $0.appendingPathComponent($1) }
             default: continuation.finish(throwing: URLError(.unsupportedURL)); return
             }
-            guard let data = try? Data(contentsOf: file) else {
+            guard var data = try? Data(contentsOf: file) else {
                 continuation.finish(throwing: URLError(.fileDoesNotExist)); return
+            }
+            // ?pick=1: the asset page with three.js swapped for the hooked copy and part picking added.
+            if host == "lib", file.pathExtension == "html", url.query?.contains("pick=1") == true {
+                data = Data(PageInstrument.forPicking(String(decoding: data, as: UTF8.self)).utf8)
             }
             let ext = file.pathExtension.lowercased()
             let mime: String = switch ext {
@@ -39,6 +43,31 @@ struct ForgeSchemeHandler: URLSchemeHandler {
             continuation.yield(.data(data))
             continuation.finish()
         }
+    }
+}
+
+// MARK: - Instrumented asset pages
+
+enum PageInstrument {
+    /// Points every three.js import at Sirpi's hooked copy (recording scenes and cameras) and adds the picking script.
+    static func forPicking(_ html: String) -> String {
+        var out = rewriteThree(html)
+        let tag = "<script src=\"forge://app/pick.js\"></script>"
+        if let r = out.range(of: "<head>", options: .caseInsensitive) { out.insert(contentsOf: "\n" + tag, at: r.upperBound) }
+        else { out = tag + "\n" + out }
+        return out
+    }
+
+    static func rewriteThree(_ html: String) -> String {
+        var s = html
+        let core = #"https?://[^'"\s]*?three[^'"\s]*?/build/three(?:\.module)?(?:\.min)?\.js"#
+        let cdnCore = #"https?://(?:esm\.sh|cdn\.skypack\.dev)/three(?:@[\w.]+)?(?=['"])"#
+        let addons = #"https?://[^'"\s]*?three[^'"\s]*?/(?:examples/jsm|addons)/"#
+        s = s.replacingOccurrences(of: core, with: "forge://app/three-hook.js", options: .regularExpression)
+        s = s.replacingOccurrences(of: "forge://app/vendor/three/build/three.module.js", with: "forge://app/three-hook.js")
+        s = s.replacingOccurrences(of: cdnCore, with: "forge://app/three-hook.js", options: .regularExpression)
+        s = s.replacingOccurrences(of: addons, with: "forge://app/vendor/three/examples/jsm/", options: .regularExpression)
+        return s
     }
 }
 

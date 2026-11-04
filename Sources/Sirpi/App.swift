@@ -70,7 +70,9 @@ final class AppModel {
     var showCamera = UserDefaults.standard.object(forKey: PrinterCamera.shownKey) as? Bool ?? true {
         didSet { UserDefaults.standard.set(showCamera, forKey: PrinterCamera.shownKey) }
     }
-    var selectedAssetID: String?
+    var selectedAssetID: String? {
+        didSet { if oldValue != selectedAssetID { pickMode = false; pickedPart = nil } }
+    }
     var showInspector = true
     /// Live window width, for toolbar items that must shrink with the window.
     var windowWidth: CGFloat = 1200
@@ -115,6 +117,11 @@ final class AppModel {
     let prep = PrepState()
     /// Preview of the selected asset (bridge injected); also used to pull GLBs out of pages.
     let preview = WebController(injectBridge: true)
+    /// Runs code while it is being written.
+    let live = LivePreview()
+    /// Click-to-select in the preview, and the part picked.
+    var pickMode = false
+    var pickedPart: PickedPart?
 
     private var generateTaskID: UUID?
     private var printTaskID: UUID?
@@ -165,6 +172,7 @@ final class AppModel {
 
     func boot() async {
         generator.server = server
+        preview.onMessage = { [weak self] m in self?.handlePreviewMessage(m) }
         Settings.migrateToMLXIfAvailable()
         slicer.refreshPresets()
         printer.onJobEnded = { [weak self] name, ok in self?.printEnded(name: name, success: ok) }
@@ -223,17 +231,41 @@ final class AppModel {
         composerImage = nil
     }
 
-    func refine(_ text: String) {
+    /// Asks the model for a new version of the selected asset. The asset stays selected: the preview shows the new
+    /// code as it is written and the request joins the asset's conversation. With a picked part, only that part changes.
+    func refine(_ text: String, label: String? = nil, part: PickedPart? = nil) {
         guard let a = selectedAsset, !text.trimmingCharacters(in: .whitespaces).isEmpty, engineReady, !generator.isRunning else { return }
-        startGeneration(prompt: a.prompt, base: a, refinement: text)
-        selectedAssetID = nil
+        var request = text
+        var shown = label
+        if let part, let html = try? String(contentsOf: a.htmlURL, encoding: .utf8) {
+            request = part.instruction(text, html: html)
+            shown = shown ?? "\(part.label): \(text)"
+        }
+        startGeneration(prompt: a.prompt, base: a, refinement: request, label: shown)
+        pickMode = false
+        pickedPart = nil
         stage = .generate
     }
 
     func fixErrors() {
         guard selectedAsset != nil, !preview.errors.isEmpty else { return }
         let errs = preview.errors.prefix(8).joined(separator: "\n")
-        refine("The page throws these JavaScript errors. Fix them without changing the asset design:\n\(errs)")
+        refine("The page throws these JavaScript errors. Fix them without changing the asset design:\n\(errs)",
+               label: "Fix \(preview.errors.count == 1 ? "the script error" : "\(preview.errors.count) script errors")")
+    }
+
+    /// Turns click-to-select on or off; the preview reloads with or without the picking hooks.
+    func setPickMode(_ on: Bool) {
+        guard let a = selectedAsset, pickMode != on else { return }
+        pickMode = on
+        pickedPart = nil
+        preview.load(on ? a.pickURL : a.pageURL)
+    }
+
+    func handlePreviewMessage(_ m: [String: Any]) {
+        guard m["type"] as? String == "part" else { return }
+        pickedPart = PickedPart(m)
+        if pickedPart != nil { refineFocusToken += 1 }
     }
 
     /// Printer facts for print-mode prompts: build volume, nozzle and the filaments loaded right now.
@@ -250,17 +282,19 @@ final class AppModel {
         return s
     }
 
-    private func startGeneration(prompt: String, base: Asset?, refinement: String?, image: ReferenceImage? = nil,
+    private func startGeneration(prompt: String, base: Asset?, refinement: String?, label: String? = nil, image: ReferenceImage? = nil,
                                  attachment: ReferenceImage? = nil, context: String? = nil, title: String? = nil) {
         let title = title ?? refinement.map { _ in "Refining \(base?.shortTitle ?? "asset")" } ?? prompt
+        live.begin()
         generateTaskID = tasks.start(.generate, title: title, detail: "Waiting for model", stage: .generate,
                                      cancel: { [weak self] in self?.generator.cancel() })
-        generator.generate(prompt: prompt, base: base, refinement: refinement, image: image, attachment: attachment,
+        generator.generate(prompt: prompt, base: base, refinement: refinement, label: label, image: image, attachment: attachment,
                            context: context, library: library) { [weak self] asset in
             guard let self else { return }
             // Each new asset is reviewed once (against its picture, if it has one) and fixed if it falls short.
             let check = refinement == nil && VisualCheck.enabled
-            if self.selectedAssetID == nil { self.selectedAssetID = asset.id }
+            // Watching the generation, or the version it started from: move on to the new version.
+            if self.selectedAssetID == nil || (base != nil && self.selectedAssetID == base?.id) { self.selectedAssetID = asset.id }
             if let id = self.generateTaskID {
                 self.tasks.finish(id, success: true, title: "\(asset.shortTitle) is ready",
                                   detail: "Generated in \(formatDuration(asset.genSeconds ?? 0)). Open it to refine it or prepare it for print.")
@@ -310,9 +344,11 @@ final class AppModel {
             tasks.finish(task, success: true, title: "Fixing \(name) after review",
                          detail: "\(verdict.checker) scored it \(verdict.score)/10 and found \(verdict.fixes.count) issue\(verdict.fixes.count == 1 ? "" : "s").")
             let follow = selectedAssetID == asset.id
-            startGeneration(prompt: asset.prompt, base: asset, refinement: verdict.refinement, image: reference,
-                            attachment: sheet, title: reference != nil ? "Matching \(name) to the picture" : "Fixing \(name) after review")
-            if follow { selectedAssetID = nil; stage = .generate }
+            startGeneration(prompt: asset.prompt, base: asset, refinement: verdict.refinement,
+                            label: (reference != nil ? "Match the picture: " : "Review fixes: ") + verdict.fixes.prefix(3).joined(separator: "; "),
+                            image: reference, attachment: sheet,
+                            title: reference != nil ? "Matching \(name) to the picture" : "Fixing \(name) after review")
+            if follow { stage = .generate }
         } catch {
             tasks.finish(task, success: false, title: "Could not review \(name)", detail: error.localizedDescription)
         }
@@ -344,7 +380,7 @@ final class AppModel {
         generateTaskID = tasks.start(.generate, title: "Continuing \(generator.shortTitle)",
                                      detail: "Picking up after \(partialTokens.formatted()) tokens", stage: .generate,
                                      cancel: { [weak self] in self?.generator.cancel() })
-        selectedAssetID = nil
+        selectedAssetID = generator.baseID
         stage = .generate
         generator.continueLast()
     }
@@ -1152,7 +1188,7 @@ struct Sidebar: View {
         })) {
             if app.generator.isRunning {
                 Section("Now") {
-                    Button { app.selectedAssetID = nil; app.stage = .generate } label: { GeneratingRow() }
+                    Button { app.selectedAssetID = app.generator.baseID; app.stage = .generate } label: { GeneratingRow() }
                         .buttonStyle(.plain)
                 }
             }

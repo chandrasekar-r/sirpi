@@ -1,0 +1,261 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Live preview</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1D1F22; }
+  /* Anything the generated code adds to the page stays hidden; only Sirpi's own view shows. */
+  body > *:not(#live) { display: none !important; }
+  #live, #live canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "forge://app/three-hook.js",
+  "three/addons/": "forge://app/vendor/three/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="live"></div>
+<script type="module">
+// Runs a generated asset's script while it is still being written: keeps the longest part that is valid
+// JavaScript (closing any open brackets), runs it, and draws whatever scene it has built so far with its own
+// camera, so the view does not depend on the render loop the code writes at the very end.
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const S = window.__sirpi;
+const post = (m) => { try { window.webkit.messageHandlers.forge.postMessage(m); } catch (_) {} };
+const raf = window.requestAnimationFrame.bind(window);
+
+// Our own renderer must not be recorded as one of the page's.
+S.quiet = true;
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+S.quiet = false;
+renderer.setPixelRatio(devicePixelRatio);
+renderer.toneMapping = THREE.NeutralToneMapping;
+document.getElementById('live').appendChild(renderer.domElement);
+const camera = new THREE.PerspectiveCamera(40, 1, 0.01, 10000);
+camera.position.set(3, 2.2, 3);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+const fallback = [new THREE.HemisphereLight(0xffffff, 0x444455, 1.6), new THREE.DirectionalLight(0xffffff, 1.8)];
+fallback[1].position.set(4, 8, 6);
+
+let shown = null, framed = false, generation = 0;
+
+// Loops started by older runs stop: their animation frames are dropped.
+window.requestAnimationFrame = (cb) => { const g = generation; return raf((t) => { if (g === generation) cb(t); }); };
+
+function resize() {
+  const w = innerWidth, h = innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(1, h);
+  camera.updateProjectionMatrix();
+}
+addEventListener('resize', resize);
+resize();
+
+function frame(scene) {
+  scene.updateMatrixWorld(true);
+  const all = new THREE.Box3(), box = new THREE.Box3(), b = new THREE.Box3(), s = new THREE.Vector3();
+  scene.traverse((o) => { if (o.isMesh && o.visible) all.expandByObject(o); });
+  if (all.isEmpty()) return false;
+  const wide = Math.max(all.max.x - all.min.x, all.max.z - all.min.z);
+  // Frame the model, not the floor: skip large flat meshes (ground planes, display discs).
+  scene.traverse((o) => {
+    if (!o.isMesh || !o.visible) return;
+    b.setFromObject(o).getSize(s);
+    const flatAndBig = s.y < 0.03 * Math.max(s.x, s.z) && Math.max(s.x, s.z) > 0.5 * wide;
+    if (!flatAndBig) box.expandByObject(o);
+  });
+  if (box.isEmpty()) box.copy(all);
+  const size = box.getSize(new THREE.Vector3()).length() || 1;
+  const centre = box.getCenter(new THREE.Vector3());
+  controls.target.copy(centre);
+  const dir = new THREE.Vector3(1, 0.7, 1).normalize();
+  camera.position.copy(centre).addScaledVector(dir, size * 1.5);
+  camera.near = size / 200; camera.far = size * 50;
+  camera.updateProjectionMatrix();
+  return true;
+}
+
+function loop() {
+  raf(loop);
+  controls.update();
+  if (shown) renderer.render(shown, camera);
+  else renderer.clear();
+}
+loop();
+
+// ---------- finding the runnable part of a half-written script ----------
+
+const IMPORT = /^\s*import\s+(?:[\s\S]*?\s+from\s+)?['"][^'"\n]+['"]\s*;?/gm;
+
+function rewriteSpecifier(spec) {
+  if (spec === 'three' || /\/build\/three(\.module)?(\.min)?\.js$/.test(spec) || /^https?:\/\/(esm\.sh|cdn\.skypack\.dev)\/three(@[\w.]+)?$/.test(spec)) return 'three';
+  const m = spec.match(/(?:examples\/jsm|addons)\/(.+)$/);
+  if (m) return 'three/addons/' + m[1].replace(/\?.*$/, '');
+  return spec;
+}
+
+/** Closing brackets for an unfinished script, or null if it ends inside a string or comment. */
+function closers(src) {
+  const stack = [];
+  let i = 0, mode = 'code';
+  while (i < src.length) {
+    const c = src[i], n = src[i + 1];
+    if (mode === 'line') { if (c === '\n') mode = 'code'; i++; continue; }
+    if (mode === 'block') { if (c === '*' && n === '/') { mode = 'code'; i += 2; } else i++; continue; }
+    if (mode === "'" || mode === '"') {
+      if (c === '\\') { i += 2; continue; }
+      if (c === mode || c === '\n') mode = 'code';
+      i++; continue;
+    }
+    if (mode === '`') {
+      if (c === '\\') { i += 2; continue; }
+      if (c === '`') { stack.pop(); mode = 'code'; i++; continue; }
+      if (c === '$' && n === '{') { stack.push('${'); mode = 'code'; i += 2; continue; }
+      i++; continue;
+    }
+    // code
+    if (c === '/' && n === '/') { mode = 'line'; i += 2; continue; }
+    if (c === '/' && n === '*') { mode = 'block'; i += 2; continue; }
+    if (c === "'" || c === '"') { mode = c; i++; continue; }
+    if (c === '`') { stack.push('`'); mode = '`'; i++; continue; }
+    if (c === '(' || c === '[' || c === '{') { stack.push(c); i++; continue; }
+    if (c === ')' || c === ']' || c === '}') {
+      const top = stack.pop();
+      if (top === '${') { mode = '`'; }
+      i++; continue;
+    }
+    i++;
+  }
+  if (mode !== 'code' && mode !== 'line') return null;
+  const close = { '(': ')', '[': ']', '{': '}' };
+  let out = '';
+  for (let k = stack.length - 1; k >= 0; k--) {
+    const s = stack[k];
+    if (s === '`' || s === '${') return null;
+    out += close[s];
+  }
+  return out;
+}
+
+const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+function parses(src) { try { new AsyncFunction('"use strict";\n' + src); return true; } catch (_) { return false; } }
+
+function runnable(body) {
+  const lines = body.split('\n');
+  let tries = 0;
+  for (let n = lines.length; n > 0 && tries < 500; n--) {
+    const pre = lines.slice(0, n).join('\n');
+    const c = closers(pre);
+    if (c === null) continue;
+    tries++;
+    const candidate = pre + '\n' + c;
+    if (parses(candidate)) return { code: candidate, lines: n };
+  }
+  return null;
+}
+
+function moduleScript(html) {
+  const lower = html.toLowerCase();
+  let at = -1, from = 0;
+  for (;;) {
+    const k = lower.indexOf('<script', from);
+    if (k < 0) break;
+    const end = lower.indexOf('>', k);
+    if (end < 0) break;
+    if (/type\s*=\s*["']?module/.test(lower.slice(k, end))) at = end + 1;
+    from = end + 1;
+  }
+  if (at < 0) return null;
+  const close = lower.indexOf('</script', at);
+  return html.slice(at, close < 0 ? undefined : close);
+}
+
+// ---------- running it ----------
+
+let running = false, queued = null;
+
+async function run(html) {
+  if (running) { queued = html; return; }
+  running = true;
+  try { await runOnce(html); } finally {
+    running = false;
+    if (queued !== null) { const q = queued; queued = null; run(q); }
+  }
+}
+
+async function runOnce(html) {
+  const script = moduleScript(html);
+  if (!script) { post({ type: 'live', meshes: 0, note: 'waiting for the script' }); return; }
+  const imports = [];
+  const body = script.replace(IMPORT, (stmt) => {
+    imports.push(stmt.replace(/(['"])([^'"\n]+)\1/, (_, q, spec) => q + rewriteSpecifier(spec) + q));
+    return '';
+  });
+  const r = runnable(body);
+  if (!r) { post({ type: 'live', meshes: 0, note: 'waiting for runnable code' }); return; }
+
+  // The script may look up elements from its own page (a container, labels, the export button): add them, hidden.
+  document.getElementById('page-dom')?.remove();
+  const holder = document.createElement('div');
+  holder.id = 'page-dom';
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    for (const el of [...doc.body.children]) if (el.tagName !== 'SCRIPT') holder.appendChild(document.importNode(el, true));
+  } catch (_) {}
+  document.body.appendChild(holder);
+
+  // Stop the previous run's loops and renderers.
+  generation++;
+  for (const old of S.renderers.splice(0)) { try { old.setAnimationLoop(null); old.dispose(); } catch (_) {} }
+  S.scenes.length = 0;
+
+  const src = imports.join('\n') + '\nlet __err = null;\ntry {\n' + r.code + '\n} catch (e) { __err = e; }\nwindow.__liveResult = __err ? String(__err) : null;\n';
+  const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+  window.__liveResult = undefined;
+  try { await import(url); } catch (e) { window.__liveResult = String(e); }
+  URL.revokeObjectURL(url);
+  // Some scripts load fonts or textures before building; give them a moment.
+  await new Promise((res) => setTimeout(res, 150));
+
+  let best = null, bestCount = -1;
+  for (const s of S.scenes) {
+    let n = 0; s.traverse((o) => { if (o.isMesh) n++; });
+    if (n > bestCount) { best = s; bestCount = n; }
+  }
+  if (best) {
+    let lit = false;
+    best.traverse((o) => { if (o.isLight) lit = true; });
+    if (!lit) for (const l of fallback) best.add(l);
+    // Fog is tuned to the script's own camera distance; ours may differ, so drop it in this throwaway copy.
+    best.fog = null;
+    shown = best;
+    if (!framed) framed = frame(best);
+  }
+  post({ type: 'live', meshes: Math.max(0, bestCount), lines: r.lines, error: window.__liveResult || null });
+}
+
+window.live = {
+  run,
+  reset() { shown = null; framed = false; generation++; S.scenes.length = 0; controls.autoRotate = true; },
+  reframe() { if (shown) framed = frame(shown); },
+  debug() {
+    if (!shown) return null;
+    shown.updateMatrixWorld(true);
+    const box = new THREE.Box3(); let lights = 0, meshes = 0;
+    shown.traverse((o) => { if (o.isMesh) { meshes++; box.expandByObject(o); } if (o.isLight) lights++; });
+    return { meshes, lights, min: box.min.toArray(), max: box.max.toArray(), cam: camera.position.toArray(), target: controls.target.toArray(), bg: shown.background && shown.background.isColor ? shown.background.getHexString() : null };
+  },
+};
+renderer.domElement.addEventListener('pointerdown', () => { controls.autoRotate = false; });
+post({ type: 'liveReady' });
+</script>
+</body>
+</html>

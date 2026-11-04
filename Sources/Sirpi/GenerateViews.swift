@@ -13,7 +13,7 @@ struct GenerateViewport: View {
         } else if app.generator.isRunning && app.selectedAssetID == nil {
             GeneratingStream()
         } else if let a = app.selectedAsset {
-            AssetPreview(asset: a)
+            if app.generator.isRunning && app.generator.baseID == a.id { RefiningViewport() } else { AssetPreview(asset: a) }
         } else {
             GeometryReader { geo in Composer(width: geo.size.width) }
         }
@@ -209,16 +209,28 @@ struct GeneratingStream: View {
                     if g.statusNote != nil { ProgressView().controlSize(.small) }
                 }
             }
-            if g.reasoning.isEmpty {
-                pane(title: "Code", count: g.codeTokens, text: g.content, tint: true,
-                     placeholder: "Waiting for \(g.engineLabel.isEmpty ? "the model" : g.engineLabel)…")
-            } else {
-                // Plan above, code below; the bar between them drags to share the height.
-                ResizablePanel(key: "streamPlan", defaultHeight: 200, range: 70...620) {
-                    pane(title: "Plan", count: g.reasoningTokens, text: g.reasoning, tint: false, placeholder: "")
+            HStack(alignment: .top, spacing: 16) {
+                VStack(alignment: .leading, spacing: 18) {
+                    if g.reasoning.isEmpty {
+                        pane(title: "Code", count: g.codeTokens, text: g.content, tint: true,
+                             placeholder: "Waiting for \(g.engineLabel.isEmpty ? "the model" : g.engineLabel)…")
+                    } else {
+                        // Plan above, code below; the bar between them drags to share the height.
+                        ResizablePanel(key: "streamPlan", defaultHeight: 200, range: 70...620) {
+                            pane(title: "Plan", count: g.reasoningTokens, text: g.reasoning, tint: false, placeholder: "")
+                        }
+                        pane(title: "Code", count: g.codeTokens, text: g.content, tint: true,
+                             placeholder: "Code starts when planning finishes.")
+                    }
                 }
-                pane(title: "Code", count: g.codeTokens, text: g.content, tint: true,
-                     placeholder: "Code starts when planning finishes.")
+                .frame(minWidth: 320, maxWidth: .infinity)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("PREVIEW").font(.caption.weight(.semibold)).tracking(0.8).foregroundStyle(.secondary)
+                    LivePane(compact: true)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Theme.hairline))
+                }
+                .frame(minWidth: 280, maxWidth: .infinity)
             }
         }
         .padding(.horizontal, 32).padding(.top, 22).padding(.bottom, 18)
@@ -335,6 +347,13 @@ struct AssetPreview: View {
             ViewportToolbar {
                 Button { app.preview.reload() } label: { Image(systemName: "arrow.clockwise") }.help("Reload preview")
                 Button { NSWorkspace.shared.open(asset.htmlURL) } label: { Image(systemName: "safari") }.help("Open in browser")
+                if asset.imported != true {
+                    Toggle(isOn: Binding(get: { app.pickMode }, set: { app.setPickMode($0) })) {
+                        Label("Select part", systemImage: "scope")
+                    }
+                    .toggleStyle(.button)
+                    .help("Click a part to change only that part")
+                }
                 ViewportDivider()
                 Button { Task { await app.exportGLB() } } label: { Label("Export GLB", systemImage: "square.and.arrow.up") }
             }
@@ -344,7 +363,7 @@ struct AssetPreview: View {
     }
 
     private func load() {
-        if app.preview.loadedURL != asset.pageURL { app.preview.load(asset.pageURL) }
+        if app.preview.loadedURL != asset.pageURL && app.preview.loadedURL != asset.pickURL { app.preview.load(asset.pageURL) }
         let a = asset
         app.preview.onFinish = { [weak lib = app.library, preview = app.preview] in
             guard !FileManager.default.fileExists(atPath: a.thumbURL.path) else { return }
@@ -527,8 +546,6 @@ struct GeneratingInspector: View {
 struct AssetInspector: View {
     @Environment(AppModel.self) private var app
     let asset: Asset
-    @State private var refinement = ""
-    @FocusState private var refineFocused: Bool
     @AppStorage("exportLightmapUVs") private var lightmapUVs = false
 
     var body: some View {
@@ -578,34 +595,7 @@ struct AssetInspector: View {
                     DetailSection(asset: asset)
 
                     if asset.imported != true {
-                        InspectorSection(title: "Refine") {
-                            ResizablePanel(key: "refineEditor", defaultHeight: 84, range: 56...360) {
-                                TextEditor(text: $refinement)
-                                    .font(.body)
-                                    .scrollContentBackground(.hidden)
-                                    .focused($refineFocused)
-                                    .padding(.horizontal, 6).padding(.vertical, 6)
-                                    .background(RoundedRectangle(cornerRadius: 10).fill(Theme.cell))
-                                    .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(refineFocused ? Theme.accent.opacity(0.5) : Theme.hairline))
-                                    .overlay(alignment: .topLeading) {
-                                        if refinement.isEmpty {
-                                            Text("Make the scarf longer and add a small bell")
-                                                .foregroundStyle(.tertiary).padding(.horizontal, 11).padding(.vertical, 6)
-                                                .allowsHitTesting(false)
-                                        }
-                                    }
-                                    .onKeyPress(.return, phases: .down) { press in
-                                        guard press.modifiers.contains(.command) else { return .ignored }
-                                        apply(); return .handled
-                                    }
-                            }
-                            HStack {
-                                Text("⌘↩ creates a new version").font(.callout).foregroundStyle(.secondary).lineLimit(1)
-                                Spacer(minLength: 8)
-                                Button("Apply") { apply() }.buttonStyle(.glass)
-                                    .disabled(refinement.trimmingCharacters(in: .whitespaces).isEmpty || !app.engineReady || app.generator.isRunning)
-                            }
-                        }
+                        InspectorSection(title: "Conversation") { AssetConversation(asset: asset) }
                     }
 
                     InspectorSection(title: "Check") {
@@ -623,6 +613,7 @@ struct AssetInspector: View {
                                 Text($0).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(3).textSelection(.enabled)
                             }
                             Button(app.provider.kind == .local ? "Fix with 3D Coder" : "Fix with \(app.provider.name)") { app.fixErrors() }.buttonStyle(.glass)
+                                .help("Asks the model to fix them; the fix joins the conversation above")
                                 .disabled(!app.engineReady || app.generator.isRunning)
                         }
                         if app.prep.assetID == asset.id && app.prep.triangles > 0 {
@@ -681,14 +672,6 @@ struct AssetInspector: View {
                 PrimaryButton(title: "Prepare for print", systemImage: "arrow.right", fullWidth: true) { app.go(.prepare) }
             }
         }
-        .onChange(of: app.refineFocusToken) { _, _ in refineFocused = true }
-    }
-
-    private func apply() {
-        let r = refinement.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !r.isEmpty else { return }
-        refinement = ""
-        app.refine(r)
     }
 }
 
