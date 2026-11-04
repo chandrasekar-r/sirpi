@@ -20,21 +20,40 @@ Runs a fine-tuned model on your Mac's GPU, or the coding agents and AI services 
 
 ## What it does
 
+### Make
+
 - **Three purposes.** *Game asset* (a GLB for Godot or any engine), *3D print* (one solid, watertight object at real size in millimetres, sized to fit your printer), or *3D scene* (a whole place such as a street or a room, in metres, with every object separately named).
 - **Text or picture in.** Describe what you want, or attach a reference picture. Before generating, Sirpi asks a few follow-up questions (style, size, colours, purpose) so the result matches what you had in mind.
-- **Local first.** Sirpi's own fine-tune of the 3D Coder ([Qwen3.5-4B GLB 3D Coder, Sirpi tune](https://huggingface.co/Chandrasekar/Qwen3.5-4B-GLB-3D-Coder-Sirpi-MLX-4bit), based on [ccore's model](https://huggingface.co/ccore/Qwen3.5-4B-GLB-3D-Coder)) downloads on first launch (2.4 GB) and runs inside the app on the GPU with [MLX](https://github.com/ml-explore/mlx-swift): about 80 tokens per second on an M4 Pro, no server, nothing leaves your Mac. Compared with the original it makes working print models far more often (16 of 20 test prompts against 11) in half the code.
-- **Or bring your own model.** Coding-agent CLIs you are already signed in to (Claude Code, opencode, Grok CLI, Kimi Code, Cursor Agent, Codex, Gemini CLI, pi) are detected automatically and use their own logins. Cloud APIs (Claude, OpenAI, Gemini, xAI, Cloudflare Workers AI, OpenRouter, Groq, DeepSeek, Mistral) and local servers (Ollama, LM Studio) work with a key or URL.
-- **Customise.** Select objects in a scene, move, rotate and scale them with a gizmo, recolour materials, duplicate, delete, and insert assets from your library. Every change is a new version.
+- **Live preview.** While the code is being written, Sirpi runs the part that is finished every couple of seconds and shows the model taking shape next to the code.
+- **Reviewed automatically.** Every new asset is checked against your request; after an asset made from a picture, Sirpi renders it from four sides next to the picture, asks a vision model what differs, and refines it once.
 - **Real-world assets.** Browse and import the 2,677 [NVIDIA SimReady](https://huggingface.co/datasets/nvidia/simready-assets) assets (OpenUSD with PBR materials), converted to GLB on demand.
-- **Matches your picture.** After an asset made from a picture, Sirpi renders it from four sides next to the picture, asks a vision model what differs, and refines it once automatically.
-- **Fast fixes.** Fixes and refinements come back as small edits to the existing code instead of a whole new file, so fixing a script error takes seconds. A generation that was stopped or cut off can be continued from where it ended.
-- **Point at what to change.** Turn on *Select part*, click a part of the model, and say what should change: the request names that part and the code that builds it, so the rest stays as it is. Every asset keeps one conversation, with each request, error fix and version in order.
-- **Live preview.** While the code is being written, Sirpi runs the part that is finished and shows the model taking shape.
+
+### Change
+
+- **Point at what to change.** Turn on *Select part*, click a part of the model, and say what should change. The request names that part, its shape, colour and position, and the code that builds it, so the rest stays as it is.
+- **One conversation per asset.** Every request, error fix and version of an asset stays in one conversation. Click a version to show it; the original is never overwritten.
+- **Fast fixes.** Fixes and refinements come back as small edits to the existing code, so fixing a script error takes seconds. A generation that was stopped or cut off can be continued from where it ended.
+- **Customise by hand.** Select objects in a scene, move, rotate and scale them with a gizmo, recolour materials, duplicate, delete, and insert assets from your library. Every change is a new version.
 - **Detail on demand.** *Smooth & add detail* subdivides meshes so curves become smooth while sharp edges stay crisp.
-- **Print on a Bambu Lab printer.** Prepare repairs meshes into watertight solids, matches colours to your AMS, slices with Bambu Studio using the preset of the spool actually loaded in each AMS slot, and sends the job over the local network (LAN mode). Watch the print on the printer's camera.
-- **Print check.** Before and after slicing, Sirpi looks for overhangs, long bridges, islands that need support, warping and detaching risks, under-extrusion, stringing and more, explains each one and offers one-click fixes to the slice or the model. Supports are added only when the model needs them. STL files are checked and repaired (holes, flipped faces) before slicing.
-- **Turntable videos.** Render a seamless 360° video of any asset: 720p to 4K, square or vertical, studio, soft or dramatic lighting, and a transparent background (HEVC with alpha) for trailers and editors.
-- **Export anywhere.** GLB (optionally with lightmap UVs for Godot's LightmapGI), OBJ with colours, a copy straight into a Godot project, Blender (open, or save a `.blend`), STL and sliced 3MF.
+
+### Print (Bambu Lab)
+
+- **Prepare.** Repairs meshes into watertight solids, shrinks prints that would not fit, and matches colours to the filament in your AMS.
+- **Slices with what is loaded.** Sirpi reads each AMS slot's spool and slices with its own Bambu preset and temperature range in Bambu Studio, and warns when the loaded filament differs from what a file was sliced for.
+- **Print check.** Before and after slicing, Sirpi measures the model and the G-code and explains what may go wrong: parts that start in mid-air, rough overhangs, long bridges, warping and detaching, thin parts that may collapse, under-extrusion, stringing, gloss differences, layer cracking and banding. Each finding has one-click fixes to the slice or the model, and an AI review of the slice is a click away.
+- **Supports only when needed.** Supports turn on only when the model has islands or steep overhangs, and your choice is remembered.
+- **STL repair.** Imported and exported meshes are checked and repaired (holes, flipped and duplicate faces) before slicing, with no online repair tool.
+- **Send and watch.** Sends the job over the local network (LAN mode), finds printers even while Bambu Studio is open, and shows the printer's camera live (RTSPS for P2S, X1 and H2; JPEG for P1 and A1).
+
+### Export
+
+- GLB (optionally with lightmap UVs for Godot's LightmapGI), OBJ with colours, a copy straight into a Godot project, Blender (open, or save a `.blend`), STL and sliced 3MF.
+- **Turntable videos.** A seamless 360° video of any asset: 720p to 4K, square or vertical, studio, soft or dramatic lighting, and a transparent background (HEVC with alpha) for trailers and editors.
+
+### Models
+
+- **Local first.** [Sirpi's fine-tune of the 3D Coder](https://huggingface.co/Chandrasekar/Qwen3.5-4B-GLB-3D-Coder-Sirpi-MLX-4bit), based on [ccore's Qwen3.5-4B GLB 3D Coder](https://huggingface.co/ccore/Qwen3.5-4B-GLB-3D-Coder), downloads on first launch (2.4 GB) and runs inside the app on the GPU with [MLX](https://github.com/ml-explore/mlx-swift): no server, nothing leaves your Mac. Compared with the original it makes working print models far more often (16 of 20 test prompts against 11), gets sizes right four times as often, and writes half as much code, so assets finish in about half the time.
+- **Or bring your own.** Coding-agent CLIs you are already signed in to (Claude Code, opencode, Grok CLI, Kimi Code, Cursor Agent, Codex, Gemini CLI, pi) are detected automatically and use their own logins; their answers stream live. Cloud APIs (Claude, OpenAI, Gemini, xAI, Cloudflare Workers AI, OpenRouter, Groq, DeepSeek, Mistral) and local servers (Ollama, LM Studio) work with a key or URL.
 
 | Follow-up questions | Customising a scene |
 |---|---|
@@ -85,10 +104,12 @@ xcodebuild -downloadComponent MetalToolchain   # once
 |---|---|
 | App | SwiftUI on macOS 27 with Liquid Glass. Pages are rendered with WebKit (`WebPage`) through a `forge://` URL scheme. |
 | Local model | `NativeEngine` runs MLX in-process (`mlx-swift-lm`), streaming tokens off the main thread. GGUF files can also run through `llama-server`. |
-| Providers | `Providers.swift` (OpenAI-compatible, Claude Messages API, and CLI agents run headless in an empty folder). `CLIDiscovery.swift` finds agents and checks sign-in with each CLI's own status command. |
+| Providers | `Providers.swift` (OpenAI-compatible, Claude Messages API, and CLI agents run headless in an empty folder; Kimi Code runs through its Agent Client Protocol server in `KimiACP.swift` so it streams). `CLIDiscovery.swift` finds agents and checks sign-in with each CLI's own status command. |
 | Generation | The model writes one standalone Three.js page with an *Export GLB* button. `Resources/web/bridge.js` captures script errors and the exported GLB. |
 | Mesh tools | `Resources/web/` (three.js r187): crease-aware Loop subdivision, lightmap UVs, OBJ export, the scene editor, and print preparation with [Manifold](https://github.com/elalish/manifold). |
 | Printing | Bambu Studio CLI for slicing; MQTT over TLS and FTPS to the printer in LAN mode. |
+| Print check | `PrintCheck.swift` reads binary STLs (contact area, overhang angles, islands found by ray casting) and the sliced G-code (bridges, overhang walls, flow against the material's melt limit, travel moves), then turns them into findings with fixes. `MeshRepair.swift` welds, re-orients and closes meshes. |
+| Part picking and live preview | `Resources/web/three-hook.js` wraps three.js so Sirpi can see a page's scenes; `pick.js` raycasts clicks and reports the part. `live.html` runs the longest valid prefix of a half-written script (closing open brackets) and frames what it has built. |
 | SimReady | `Resources/tools/simready_to_glb.py` uses Pixar's `usd-core` to flatten instanced USD meshes and map NVIDIA's OmniPBR materials to glTF PBR. |
 | Fine-tuning | [`finetune/`](finetune/README.md): rejection-sampling LoRA on Apple silicon, including a chunked Gated DeltaNet kernel that makes long-sequence training of Qwen3.5 possible in mlx-lm. |
 

@@ -70,6 +70,11 @@ final class NativeEngine {
                 guard let c = container else {
                     continuation.finish(throwing: ForgeError("The model is not loaded.")); return
                 }
+                // One generation on the GPU at a time: MLX is not safe with two token loops evaluating at once
+                // (a review, a fix and a follow-up question can all ask the local model together).
+                await GPUGate.shared.acquire()
+                defer { GPUGate.shared.releaseSoon() }
+                if Task.isCancelled { continuation.finish(); return }
                 // Keep the Mac from napping, coalescing timers or sleeping while it generates.
                 let activity = ProcessInfo.processInfo.beginActivity(
                     options: [.userInitiated, .latencyCritical, .idleSystemSleepDisabled],
@@ -119,6 +124,39 @@ final class NativeEngine {
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+}
+
+// MARK: - one GPU job at a time
+
+/// FIFO lock around local-model generation. `releaseSoon` waits for the GPU stream to drain first, so a cancelled
+/// token loop that is still finishing its last step never overlaps the next one, or app shutdown.
+final class GPUGate: @unchecked Sendable {
+    static let shared = GPUGate()
+    private let lock = NSLock()
+    private var busy = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var isBusy: Bool { lock.lock(); defer { lock.unlock() }; return busy }
+
+    func acquire() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            if busy { waiters.append(c); lock.unlock() } else { busy = true; lock.unlock(); c.resume() }
+        }
+    }
+
+    func releaseSoon() {
+        Stream.gpu.synchronize()
+        lock.lock()
+        if waiters.isEmpty { busy = false; lock.unlock() } else { let next = waiters.removeFirst(); lock.unlock(); next.resume() }
+    }
+
+    /// Waits (up to `seconds`) until no generation holds the GPU. Used before quitting.
+    func waitIdle(seconds: Double) {
+        let end = Date().addingTimeInterval(seconds)
+        while isBusy && Date() < end { Thread.sleep(forTimeInterval: 0.02) }
+        Stream.gpu.synchronize()
     }
 }
 

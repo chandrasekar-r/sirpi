@@ -32,6 +32,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
+    /// Quitting while the local model generates used to crash: exit() tore down MLX's GPU objects under the running
+    /// token loop. Stop generation, let the GPU finish its last step, then leave without running C++ teardown.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        MainActor.assumeIsolated { app?.stopAllGeneration() }
+        GPUGate.shared.waitIdle(seconds: 5)
+        return .terminateNow
+    }
+    func applicationWillTerminate(_ n: Notification) {
+        UserDefaults.standard.synchronize()
+        GPUGate.shared.waitIdle(seconds: 2)
+        _exit(0)
+    }
+
     /// Clicking a notification opens the asset at the stage it refers to.
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let info = response.notification.request.content.userInfo
@@ -402,6 +415,8 @@ final class AppModel {
     }
 
     func stopGenerating() { generator.cancel(); generationEnded() }
+    /// Before quitting: stop the asset generation and any follow-up questions that use the model.
+    func stopAllGeneration() { generator.cancel(); brief = nil }
 
     // MARK: detail
 

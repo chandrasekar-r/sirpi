@@ -78,7 +78,7 @@ struct HelpView: View {
             section("Detail", "Low-poly is quickest. Detailed and High detail ask the model for more parts, rounder shapes, bevels and small details. Large cloud models follow this best.")
             section("Follow-up questions", "Before generating, a quick model asks a few questions about style, size, colours or purpose. Answer, type your own, or skip. Turn this off in Settings › Generation.")
             section("Reference picture", "Use Picture in the composer, drop an image on the box, or choose File › Generate from Picture. Cloud models and Claude Code see the picture; for the local model, a vision model describes it first.")
-            section("Refine", "Select an asset and describe a change under Refine. Each refinement is a new version; the original stays.")
+            section("Conversation", "Select an asset and describe a change in its Conversation. Turn on Select part and click a part of the model to change only that part. Every request, error fix and version stays in one conversation; click a version to show it. The original stays.")
         case .customise:
             para("Select an asset and press Customise scene (or Customise parts).")
             steps(["Click an object in the view, or pick it in the Objects list.",
@@ -111,7 +111,7 @@ struct HelpView: View {
             para("Textures default to 512 px. Choose Full only when you need the original quality; those downloads are large. The first import sets up the USD converter once.")
             para("Licence: CC-BY-4.0. You may use these assets, including commercially, if you credit NVIDIA.")
         case .providers:
-            section("On this Mac", "The bundled 3D Coder runs inside the app on the GPU. MLX 4-bit is fastest; 6-bit is closest to the original.")
+            section("On this Mac", "Sirpi's fine-tuned 3D Coder downloads on first launch (2.4 GB) and runs inside the app on the GPU. Pick other weights, or ccore's original model, in Settings › Model.")
             section("Coding agents", "Claude Code, opencode, Grok, Kimi, Cursor Agent, Codex, Gemini CLI and pi are detected automatically and use the login they already have. Pick a model for each in Settings › Coding Agents.")
             section("Cloud APIs", "Claude, OpenAI, Gemini, xAI, Cloudflare Workers AI, OpenRouter, Groq, DeepSeek and Mistral need an API key in Settings › Cloud APIs. Ollama and LM Studio run locally.")
         case .shortcuts:
