@@ -20,20 +20,6 @@ struct SirpiApp: App {
         }
         .windowToolbarStyle(.unified)
         .commands { ForgeCommands(app: app) }
-
-        Window("Printer Camera", id: "camera") {
-            CameraWindow().environment(app).preferredColorScheme(.dark)
-        }
-        .defaultSize(width: 960, height: 580)
-
-        Window("Sirpi Help", id: "help") {
-            HelpView().preferredColorScheme(.dark)
-        }
-        .defaultSize(width: 860, height: 640)
-
-        SwiftUI.Settings {
-            SettingsView().environment(app).preferredColorScheme(.dark)
-        }
     }
 }
 
@@ -70,11 +56,20 @@ enum Stage: String, CaseIterable, Identifiable {
     }
 }
 
+enum AppPage { case workspace, settings, help }
+
 // MARK: - App model
 
 @Observable @MainActor
 final class AppModel {
     var stage: Stage = .generate
+    /// Settings and Help open inside the main window, in place of the library and stages.
+    var page: AppPage = .workspace
+    var helpTopic: HelpTopic = .start
+    /// Whether the Print stage shows the live chamber camera.
+    var showCamera = UserDefaults.standard.object(forKey: PrinterCamera.shownKey) as? Bool ?? true {
+        didSet { UserDefaults.standard.set(showCamera, forKey: PrinterCamera.shownKey) }
+    }
     var selectedAssetID: String?
     var showInspector = true
     /// Live window width, for toolbar items that must shrink with the window.
@@ -188,6 +183,7 @@ final class AppModel {
     func go(_ s: Stage) {
         if (s == .prepare || s == .slice) && selectedAsset == nil { return }
         stage = s
+        page = .workspace
     }
 
     func canGo(_ s: Stage) -> Bool { s == .generate || s == .print || selectedAsset != nil }
@@ -764,6 +760,23 @@ final class AppModel {
         } catch { alert = error.localizedDescription }
     }
 
+    func openSettings(_ pane: SettingsPane? = nil) {
+        if let pane { UserDefaults.standard.set(pane.rawValue, forKey: "settingsPane") }
+        page = .settings
+    }
+
+    func openHelp(_ topic: HelpTopic = .start) {
+        helpTopic = topic
+        page = .help
+    }
+
+    /// The camera feed lives on the Print stage.
+    func watchCamera() {
+        showCamera = true
+        stage = .print
+        page = .workspace
+    }
+
     func openInStudio(_ url: URL) {
         NSWorkspace.shared.open([url], withApplicationAt: URL(fileURLWithPath: Settings.bambuStudioPath),
                                 configuration: NSWorkspace.OpenConfiguration())
@@ -778,23 +791,45 @@ struct RootView: View {
     var body: some View {
         @Bindable var app = app
         NavigationSplitView {
-            Sidebar()
-                .navigationSplitViewColumnWidth(min: 200, ideal: 264, max: 340)
+            Group {
+                switch app.page {
+                case .workspace: Sidebar()
+                case .settings: SettingsSidebar()
+                case .help: HelpSidebar()
+                }
+            }
+            .navigationSplitViewColumnWidth(min: 200, ideal: 264, max: 340)
         } detail: {
-            DetailWithInspector()
-                .navigationTitle(app.selectedAsset?.shortTitle ?? (app.generator.isRunning ? app.generator.shortTitle : "New asset"))
+            switch app.page {
+            case .workspace:
+                DetailWithInspector()
+                    .navigationTitle(app.selectedAsset?.shortTitle ?? (app.generator.isRunning ? app.generator.shortTitle : "New asset"))
+            case .settings:
+                SettingsView().navigationTitle("Settings")
+            case .help:
+                HelpView().navigationTitle("Help")
+            }
         }
         .toolbar {
+            if app.page != .workspace {
+                ToolbarItem(placement: .navigation) {
+                    Button { app.page = .workspace } label: { Label("Back", systemImage: "chevron.left") }
+                        .keyboardShortcut(.cancelAction)
+                        .help("Back to \(app.stage.title) (Esc)")
+                }
+            }
             // Computed here so the toolbar closure itself depends on the width and is rebuilt when it changes.
             ToolbarItem(placement: .principal) { StagePicker(compact: app.windowWidth < 1140).id(app.windowWidth < 1140) }
             ToolbarItem(placement: .primaryAction) { TasksButton() }
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    withAnimation(.snappy(duration: 0.25)) { app.showInspector.toggle() }
-                } label: {
-                    Label(app.showInspector ? "Hide Inspector" : "Show Inspector", systemImage: "sidebar.right")
+            if app.page == .workspace {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        withAnimation(.snappy(duration: 0.25)) { app.showInspector.toggle() }
+                    } label: {
+                        Label(app.showInspector ? "Hide Inspector" : "Show Inspector", systemImage: "sidebar.right")
+                    }
+                    .help(app.showInspector ? "Hide inspector (⌥⌘I)" : "Show inspector (⌥⌘I)")
                 }
-                .help(app.showInspector ? "Hide inspector (⌥⌘I)" : "Show inspector (⌥⌘I)")
             }
         }
         .overlay(alignment: .bottom) { ToastView().padding(.bottom, 72) } // clears the viewport toolbars
@@ -816,6 +851,35 @@ struct RootView: View {
         .onChange(of: app.generator.phase) { _, p in
             if case .failed = p { app.generationEnded() }
         }
+    }
+}
+
+/// Switches the main window between the workspace (library and stages), Settings and Help.
+struct PageSwitcher: View {
+    @Environment(AppModel.self) private var app
+    var body: some View {
+        HStack(spacing: 4) {
+            item(.workspace, "Library", "square.stack.3d.up")
+            item(.settings, "Settings", "gearshape")
+            item(.help, "Help", "questionmark.circle")
+        }
+        .padding(.horizontal, 8).padding(.bottom, 8).padding(.top, 2)
+    }
+
+    private func item(_ page: AppPage, _ title: String, _ symbol: String) -> some View {
+        let active = app.page == page
+        return Button { app.page = page } label: {
+            Label(title, systemImage: symbol)
+                .font(.callout.weight(active ? .semibold : .regular))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .foregroundStyle(active ? Theme.accent : .secondary)
+                .background(active ? Theme.accent.opacity(0.14) : .clear, in: .rect(cornerRadius: 8))
+                .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .help(title)
     }
 }
 
@@ -1022,9 +1086,12 @@ struct Sidebar: View {
         }
         .safeAreaInset(edge: .bottom) {
             // Opaque backing so list rows scrolling underneath never show through the card.
-            PrinterDock().padding(.horizontal, 10).padding(.bottom, 10).padding(.top, 8)
-                .background(.bar)
-                .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
+            VStack(spacing: 0) {
+                PrinterDock().padding(.horizontal, 10).padding(.bottom, 8).padding(.top, 8)
+                PageSwitcher()
+            }
+            .background(.bar)
+            .overlay(alignment: .top) { Rectangle().fill(Theme.hairline).frame(height: 1) }
         }
         .toolbar {
             ToolbarItem {
@@ -1210,7 +1277,7 @@ struct TaskList: View {
             HStack {
                 Text(serverText).foregroundStyle(.secondary)
                 Spacer()
-                SettingsLink { Text("Model settings") }.controlSize(.small)
+                SettingsButton(pane: .local) { Text("Model settings") }.controlSize(.small)
             }
             .padding(10)
         }
@@ -1354,7 +1421,10 @@ struct ForgeCommands: Commands {
 
     var body: some Commands {
         SidebarCommands()
-        CommandGroup(replacing: .help) { HelpMenuItems() }
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") { app.openSettings() }.keyboardShortcut(",", modifiers: .command)
+        }
+        CommandGroup(replacing: .help) { HelpMenuItems(app: app) }
         CommandGroup(after: .sidebar) {
             Button(app.showInspector ? "Hide Inspector" : "Show Inspector") {
                 withAnimation(.snappy(duration: 0.25)) { app.showInspector.toggle() }
@@ -1466,10 +1536,10 @@ struct ForgeCommands: Commands {
             Toggle("Chamber Light", isOn: Binding(get: { p.status.chamberLight }, set: { p.setLight($0) }))
                 .keyboardShortcut("l", modifiers: [.command, .option]).disabled(p.connection != .connected)
             Button("Home Axes") { p.home() }.disabled(p.connection != .connected || p.status.isPrinting)
-            WatchCameraButton().keyboardShortcut("c", modifiers: [.command, .option]).disabled(!p.isConfigured)
+            Button("Watch Camera") { app.watchCamera() }.keyboardShortcut("c", modifiers: [.command, .option]).disabled(!p.isConfigured)
             Divider()
             Button("Find Printers on Network") { app.stage = .print; app.discovery.scan() }
-            SettingsLink { Text("Printer Settings…") }
+            Button("Printer Settings…") { app.openSettings(.printer) }
         }
 
         CommandGroup(before: .toolbar) {

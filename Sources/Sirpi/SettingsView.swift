@@ -29,34 +29,49 @@ enum SettingsPane: String, CaseIterable, Identifiable {
     }
 }
 
-struct SettingsView: View {
-    @Environment(AppModel.self) private var app
+/// Settings panes, shown in the main window's sidebar while Settings is open.
+struct SettingsSidebar: View {
     @AppStorage("settingsPane") private var paneRaw = SettingsPane.generation.rawValue
-
     var body: some View {
         let pane = Binding<SettingsPane?>(get: { SettingsPane(rawValue: paneRaw) ?? .generation },
                                           set: { paneRaw = ($0 ?? .generation).rawValue })
-        NavigationSplitView {
-            List(SettingsPane.allCases, selection: pane) { p in
-                Label(p.title, systemImage: p.symbol).tag(p)
-            }
-            .navigationSplitViewColumnWidth(190)
-            .safeAreaInset(edge: .bottom) { ActiveEngineBadge().padding(10) }
-        } detail: {
-            Group {
-                switch pane.wrappedValue ?? .generation {
-                case .generation: GenerationPane()
-                case .agents: AgentsPane()
-                case .cloud: CloudPane()
-                case .local: LocalModelPane()
-                case .printer: PrinterPane()
-                case .slicer: SlicerPane()
-                }
-            }
-            .navigationTitle((pane.wrappedValue ?? .generation).title)
-            .tint(Theme.accent) // switches and pickers in the panes use the app accent; the sidebar keeps the system one
+        List(SettingsPane.allCases, selection: pane) { p in
+            Label(p.title, systemImage: p.symbol).tag(p)
         }
-        .frame(minWidth: 780, idealWidth: 820, minHeight: 560, idealHeight: 620)
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 8) {
+                ActiveEngineBadge().padding(.horizontal, 10)
+                PageSwitcher()
+            }
+        }
+    }
+}
+
+/// The open settings pane, shown in the main window.
+struct SettingsView: View {
+    @AppStorage("settingsPane") private var paneRaw = SettingsPane.generation.rawValue
+    var body: some View {
+        Group {
+            switch SettingsPane(rawValue: paneRaw) ?? .generation {
+            case .generation: GenerationPane()
+            case .agents: AgentsPane()
+            case .cloud: CloudPane()
+            case .local: LocalModelPane()
+            case .printer: PrinterPane()
+            case .slicer: SlicerPane()
+            }
+        }
+        .tint(Theme.accent) // switches and pickers in the panes use the app accent; the sidebar keeps the system one
+    }
+}
+
+/// Opens a settings pane inside the main window (replaces SwiftUI's SettingsLink, which opens a separate window).
+struct SettingsButton<Content: View>: View {
+    @Environment(AppModel.self) private var app
+    var pane: SettingsPane? = nil
+    @ViewBuilder var label: () -> Content
+    var body: some View {
+        Button { app.openSettings(pane) } label: { label() }
     }
 }
 

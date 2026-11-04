@@ -35,28 +35,33 @@ enum HelpTopic: String, CaseIterable, Identifiable {
     }
 }
 
-struct HelpView: View {
-    @State private var topic: HelpTopic? = .start
+/// Help topics, shown in the main window's sidebar while Help is open.
+struct HelpSidebar: View {
+    @Environment(AppModel.self) private var app
     var body: some View {
-        NavigationSplitView {
-            List(HelpTopic.allCases, selection: $topic) { t in Label(t.title, systemImage: t.symbol).tag(t) }
-                .navigationSplitViewColumnWidth(210)
-        } detail: {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    Text((topic ?? .start).title).font(.title.weight(.semibold))
-                    content(topic ?? .start)
-                }
-                .frame(maxWidth: 640, alignment: .leading)
-                .padding(28)
-                .frame(maxWidth: .infinity, alignment: .leading)
+        List(HelpTopic.allCases, selection: Binding(get: { app.helpTopic }, set: { app.helpTopic = $0 ?? .start })) { t in
+            Label(t.title, systemImage: t.symbol).tag(t)
+        }
+        .safeAreaInset(edge: .bottom) { PageSwitcher() }
+    }
+}
+
+/// The open help topic, shown in the main window.
+struct HelpView: View {
+    @Environment(AppModel.self) private var app
+    var body: some View {
+        let topic = app.helpTopic
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                Text(topic.title).font(.title.weight(.semibold))
+                content(topic)
             }
-            .textSelection(.enabled)
+            .frame(maxWidth: 640, alignment: .leading)
+            .padding(28)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minWidth: 760, idealWidth: 860, minHeight: 520, idealHeight: 640)
-        .onReceive(NotificationCenter.default.publisher(for: .showHelpTopic)) { n in
-            if let t = n.object as? HelpTopic { topic = t }
-        }
+        .id(topic)
+        .textSelection(.enabled)
     }
 
     @ViewBuilder private func content(_ t: HelpTopic) -> some View {
@@ -89,6 +94,7 @@ struct HelpView: View {
                    "Slice: runs Bambu Studio in the background and shows the layers, time and filament.",
                    "Print: sends the file to your printer over the local network and shows progress."])
             para("3D-print assets keep their real size and are shrunk only if they do not fit your printer's build volume. Set your printer model and nozzle in Settings › Printer.")
+            section("Chamber camera", "The Print stage shows the printer's camera live (⌥⌘C). The P2S, X1 and H2 series share it only with LAN Only Mode and Developer Mode turned on in the printer's Settings › Network. On weak Wi-Fi the picture may pause; Sirpi reconnects on its own.")
         case .export:
             section("GLB", "Export GLB saves the model. Turn on Add lightmap UVs to include a second UV set for baked lighting in Godot (LightmapGI).")
             section("Godot", "Copy to Godot project puts the GLB in res://assets/assetforge/ of the project you choose once.")
@@ -115,7 +121,7 @@ struct HelpView: View {
                 ("Lay flat", "⌥⌘F"), ("Multi-colour", "⇧⌘C"), ("Slice", "⌘B"), ("Send to printer", "⇧⌘P"), ("Pause or resume print", "⌥⌘P"),
                 ("Chamber light", "⌥⌘L"), ("Printer camera", "⌥⌘C"), ("Show tasks", "⌥⌘T"), ("Show or hide inspector", "⌥⌘I"), ("Reset 3D view", "⌘0"),
                 ("Scene: move, rotate, scale", "W, E, R"), ("Scene: frame object", "F"), ("Scene: duplicate", "⌘D"), ("Scene: undo", "⌘Z"),
-                ("Scene: delete", "Delete"), ("Scene: deselect", "Esc"), ("Help", "⌘?"),
+                ("Scene: delete", "Delete"), ("Scene: deselect", "Esc"), ("Settings", "⌘,"), ("Help", "⌘?"), ("Back from Settings or Help", "Esc"),
             ])
         case .troubleshooting:
             section("Generate is greyed out", "The engine shown under Writes the asset is not ready. Open Settings: the local model may still be loading, a coding agent may need signing in, or a cloud API may need a key.")
@@ -157,19 +163,12 @@ struct HelpView: View {
     }
 }
 
-extension Notification.Name { static let showHelpTopic = Notification.Name("showHelpTopic") }
-
-/// Help menu items. A View so it can open the Help window.
+/// Help menu items.
 struct HelpMenuItems: View {
-    @Environment(\.openWindow) private var openWindow
+    let app: AppModel
     var body: some View {
-        Button("Sirpi Help") { openWindow(id: "help") }.keyboardShortcut("?", modifiers: .command)
-        Button("Keyboard Shortcuts") {
-            openWindow(id: "help")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                NotificationCenter.default.post(name: .showHelpTopic, object: HelpTopic.shortcuts)
-            }
-        }
+        Button("Sirpi Help") { app.openHelp() }.keyboardShortcut("?", modifiers: .command)
+        Button("Keyboard Shortcuts") { app.openHelp(.shortcuts) }
         Divider()
         Link("NVIDIA SimReady licence (CC-BY-4.0)", destination: URL(string: "https://creativecommons.org/licenses/by/4.0/")!)
         Link("three.js documentation", destination: URL(string: "https://threejs.org/docs/")!)

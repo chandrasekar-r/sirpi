@@ -25,14 +25,18 @@ struct JobView: View {
         let active = s.isPrinting || s.isPaused
         ZStack(alignment: .bottomLeading) {
             VStack(spacing: 22) {
-                Group {
-                    if let a = asset, let img = NSImage(contentsOf: a.has(a.plateImageURL) ? a.plateImageURL : a.thumbURL) {
-                        Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
-                    } else {
-                        Image(systemName: active ? "cube.fill" : "printer").font(.system(size: 72)).foregroundStyle(.tertiary)
+                if app.showCamera {
+                    CameraPanel().frame(maxWidth: 760)
+                } else {
+                    Group {
+                        if let a = asset, let img = NSImage(contentsOf: a.has(a.plateImageURL) ? a.plateImageURL : a.thumbURL) {
+                            Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
+                        } else {
+                            Image(systemName: active ? "cube.fill" : "printer").font(.system(size: 72)).foregroundStyle(.tertiary)
+                        }
                     }
+                    .frame(width: 340, height: 340)
                 }
-                .frame(width: 340, height: 340)
 
                 VStack(alignment: .leading, spacing: 10) {
                     HStack(alignment: .firstTextBaseline) {
@@ -59,18 +63,21 @@ struct JobView: View {
                             .foregroundStyle(Theme.warning)
                     }
                 }
-                .frame(width: 520)
+                .frame(maxWidth: app.showCamera ? 760 : 520)
             }
+            .padding(24)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-            HStack(spacing: 12) {
-                Image(systemName: "video")
-                Text("Chamber camera")
-                WatchCameraButton(title: "Watch").buttonStyle(.glass)
+            if !app.showCamera {
+                HStack(spacing: 12) {
+                    Image(systemName: "video")
+                    Text("Chamber camera")
+                    Button("Show") { app.showCamera = true }.buttonStyle(.glass)
+                }
+                .padding(.leading, 14).padding(.trailing, 8).frame(height: 44)
+                .glassEffect(.regular, in: .capsule)
+                .padding(16)
             }
-            .padding(.leading, 14).padding(.trailing, 8).frame(height: 44)
-            .glassEffect(.regular, in: .capsule)
-            .padding(16)
         }
     }
 }

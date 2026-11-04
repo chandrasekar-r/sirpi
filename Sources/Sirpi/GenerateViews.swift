@@ -155,7 +155,7 @@ struct Composer: View {
                     Label(problem, systemImage: loading ? "hourglass" : "exclamationmark.triangle")
                         .foregroundStyle(loading ? Color.secondary : Theme.warning)
                         .fixedSize(horizontal: false, vertical: true)
-                    if !loading { SettingsLink { Text("Open Settings") }.buttonStyle(.glass).controlSize(.small) }
+                    if !loading { SettingsButton { Text("Open Settings") }.buttonStyle(.glass).controlSize(.small) }
                 }
             }
         }
@@ -437,7 +437,7 @@ struct ModelInspector: View {
                 HStack {
                     Text(footerText).foregroundStyle(.secondary).lineLimit(1)
                     Spacer()
-                    SettingsLink { Text("Settings") }.buttonStyle(.glass)
+                    SettingsButton { Text("Settings") }.buttonStyle(.glass)
                 }
             }
         }
@@ -930,7 +930,7 @@ struct ProviderMenu: View {
             }
             Divider()
             Button("Rescan Coding Agents") { Task { await app.clis.scan() } }
-            SettingsLink { Text("Provider Settings…") }
+            SettingsButton(pane: .agents) { Text("Provider Settings…") }
         } label: {
             HStack(spacing: 6) {
                 Image(systemName: current.symbol)

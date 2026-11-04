@@ -28,18 +28,20 @@ final class PrinterSocket: @unchecked Sendable {
     private let queue = DispatchQueue(label: "sirpi.camera.socket")
     private var bytes: [UInt8] = []
     private var pos = 0
+    private var lastReceive = Date()   // only touched on `queue`
+    private var watchdog: DispatchSourceTimer?
 
     init(host: String, port: UInt16) {
         let tls = NWProtocolTLS.Options()
         sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, _, complete in complete(true) }, .global())
         let tcp = NWProtocolTCP.Options()
-        tcp.connectionTimeout = 5
+        tcp.connectionTimeout = 12   // the printer's Wi-Fi can be slow; a TLS handshake may take several seconds
         tcp.noDelay = true
         conn = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!,
                             using: NWParameters(tls: tls, tcp: tcp))
     }
 
-    func open(timeout: Double = 6) async throws {
+    func open(timeout: Double = 15) async throws {
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
             var done = false   // only touched on `queue`
             func finish(_ error: Error?) {
@@ -60,7 +62,21 @@ final class PrinterSocket: @unchecked Sendable {
         }
     }
 
-    func close() { conn.cancel() }
+    func close() { watchdog?.cancel(); conn.cancel() }
+
+    /// Closes the connection when nothing has arrived for `idle` seconds, so a stream that stalls without closing
+    /// ends with an error and can be reconnected instead of freezing on the last frame.
+    func watch(idle: Double) {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 2, repeating: 2)
+        lastReceive = Date()
+        timer.setEventHandler { [weak self] in
+            guard let self else { return }
+            if Date().timeIntervalSince(self.lastReceive) > idle { self.watchdog?.cancel(); self.conn.cancel() }
+        }
+        watchdog = timer
+        timer.resume()
+    }
 
     func send(_ data: Data) async throws {
         try await withCheckedThrowingContinuation { (c: CheckedContinuation<Void, Error>) in
@@ -72,8 +88,8 @@ final class PrinterSocket: @unchecked Sendable {
 
     private func fill() async throws {
         let chunk: Data = try await withCheckedThrowingContinuation { c in
-            conn.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { data, _, complete, error in
-                if let data, !data.isEmpty { c.resume(returning: data) }
+            conn.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, complete, error in
+                if let data, !data.isEmpty { self?.lastReceive = Date(); c.resume(returning: data) }
                 else if let error { c.resume(throwing: error) }
                 else if complete { c.resume(throwing: CameraError.closed) }
                 else { c.resume(returning: Data()) }
@@ -121,8 +137,10 @@ final class PrinterSocket: @unchecked Sendable {
 enum JPEGCamera {
     static func run(ip: String, code: String, onFrame: @escaping @Sendable (CGImage) -> Void) async throws {
         let socket = PrinterSocket(host: ip, port: 6000)
+        defer { socket.close() }
         try await withTaskCancellationHandler {
             try await socket.open()
+            socket.watch(idle: 15)
             var login = Data()
             for v: UInt32 in [0x40, 0x3000, 0, 0] { withUnsafeBytes(of: v.littleEndian) { login.append(contentsOf: $0) } }
             login.append(fixed("bblp", 32)); login.append(fixed(code, 32))
@@ -170,8 +188,10 @@ final class RTSPCamera: @unchecked Sendable {
     }
 
     func run() async throws {
+        defer { socket.close() }
         try await withTaskCancellationHandler {
             try await socket.open()
+            socket.watch(idle: 15)
             _ = try await request("OPTIONS", url)
             let describe = try await request("DESCRIBE", url, headers: ["Accept": "application/sdp"])
             let sdp = String(decoding: describe.body, as: UTF8.self)
@@ -429,7 +449,7 @@ final class VideoAssembler: @unchecked Sendable {
 
 @Observable @MainActor
 final class PrinterCamera {
-    enum State: Equatable { case idle, connecting, live, failed(String) }
+    enum State: Equatable { case idle, connecting, live, reconnecting, failed(String) }
     var state: State = .idle
     var source = ""
     var videoSize = CGSize(width: 16, height: 9)
@@ -454,36 +474,78 @@ final class PrinterCamera {
         imageLayer.contents = nil
         let layer = videoLayer
         task = Task.detached { [weak self] in
-            do {
+            enum Mode { case unknown, rtsp, jpeg }
+            final class Flag: @unchecked Sendable { var frames = false }
+            var mode = Mode.unknown
+            var failures = 0
+            var lastError: Error?
+            while !Task.isCancelled {
+                let flag = Flag()
+                var usedJPEG = mode == .jpeg
+                defer { if flag.frames, mode == .unknown { mode = usedJPEG ? .jpeg : .rtsp } }
                 do {
-                    let rtsp = RTSPCamera(ip: ip, code: code, layer: layer) { size in
-                        Task { @MainActor in self?.went(live: "Live video", size: size) }
-                    }
-                    try await rtsp.run()
-                } catch CameraError.unreachable {
-                    // No RTSP service: P1 and A1 printers stream JPEGs on port 6000 instead.
-                    try await JPEGCamera.run(ip: ip, code: code) { image in
-                        Task { @MainActor in
-                            guard let self else { return }
-                            if self.state != .live { self.went(live: "Live pictures", size: CGSize(width: image.width, height: image.height)) }
-                            CATransaction.begin(); CATransaction.setDisableActions(true)
-                            self.imageLayer.contents = image
-                            CATransaction.commit()
+                    if mode != .jpeg {
+                        do {
+                            try await RTSPCamera(ip: ip, code: code, layer: layer) { size in
+                                flag.frames = true
+                                Task { @MainActor in self?.went(live: "Live video", size: size) }
+                            }.run()
+                        } catch CameraError.unreachable where mode == .unknown {
+                            // No RTSP service: P1 and A1 printers stream JPEGs on port 6000 instead.
+                            usedJPEG = true
+                            try await Self.runJPEG(ip: ip, code: code, flag: { flag.frames = true }, camera: self)
                         }
+                    } else {
+                        try await Self.runJPEG(ip: ip, code: code, flag: { flag.frames = true }, camera: self)
                     }
+                    lastError = CameraError.closed
+                } catch is CancellationError {
+                    return
+                } catch CameraError.badCode {
+                    await MainActor.run { self?.ended(CameraError.badCode) }; return
+                } catch CameraError.unsupported(let c) {
+                    await MainActor.run { self?.ended(CameraError.unsupported(c)) }; return
+                } catch {
+                    lastError = error
                 }
-                await MainActor.run { self?.ended(nil) }
-            } catch is CancellationError {
-            } catch {
-                await MainActor.run { self?.ended(error) }
+                if Task.isCancelled { return }
+                // Streams drop on weak Wi-Fi; reconnect on our own and only give up after repeated failures.
+                if flag.frames { failures = 0 } else { failures += 1 }
+                if failures >= 3 {
+                    let e = lastError
+                    await MainActor.run { self?.ended(e) }; return
+                }
+                await MainActor.run { self?.reconnecting() }
+                try? await Task.sleep(for: .seconds(flag.frames ? 1 : 3))
             }
         }
     }
 
+    private nonisolated static func runJPEG(ip: String, code: String, flag: @escaping @Sendable () -> Void,
+                                            camera: PrinterCamera?) async throws {
+        try await JPEGCamera.run(ip: ip, code: code) { [weak camera] image in
+            flag()
+            Task { @MainActor in
+                guard let camera else { return }
+                if camera.state != .live { camera.went(live: "Live pictures", size: CGSize(width: image.width, height: image.height)) }
+                CATransaction.begin(); CATransaction.setDisableActions(true)
+                camera.imageLayer.contents = image
+                CATransaction.commit()
+            }
+        }
+    }
+
+    private func reconnecting() {
+        guard task != nil else { return }
+        if state == .live { state = .reconnecting }
+    }
+
     func stop() {
         task?.cancel(); task = nil
-        if state == .connecting || state == .live { state = .idle }
+        if state != .idle, !isFailed { state = .idle }
     }
+
+    private var isFailed: Bool { if case .failed = state { true } else { false } }
 
     private func went(live source: String, size: CGSize) {
         guard task != nil else { return }
@@ -496,6 +558,8 @@ final class PrinterCamera {
         state = .failed(Self.message(for: error))
     }
 
+    static let shownKey = "printCameraShown"
+
     static let unlockSteps = "On the printer's screen open Settings, then Network, and turn on LAN Only Mode and Developer Mode. Then try again."
 
     static func message(for error: Error?) -> String {
@@ -507,7 +571,7 @@ final class PrinterCamera {
         case .unsupported(let codec)?:
             return "The camera sends video Sirpi can't show yet (\(codec))."
         case .closed?, nil:
-            return "The camera stream stopped. The printer may have gone to sleep or lost Wi-Fi."
+            return "The camera stream keeps dropping. The printer's Wi-Fi may be weak, or it may have gone to sleep."
         case .protocolError(let why)?:
             return "The camera answered in a way Sirpi didn't expect: \(why)."
         }
@@ -541,7 +605,8 @@ struct CameraLayerView: NSViewRepresentable {
     func updateNSView(_ nsView: Host, context: Context) {}
 }
 
-struct CameraWindow: View {
+/// The live chamber camera, shown on the Print stage.
+struct CameraPanel: View {
     @Environment(AppModel.self) private var app
     @State private var camera = PrinterCamera()
 
@@ -550,37 +615,57 @@ struct CameraWindow: View {
         ZStack {
             Color.black
             CameraLayerView(camera: camera)
-                .aspectRatio(camera.videoSize, contentMode: .fit)
             switch camera.state {
             case .idle, .connecting:
                 VStack(spacing: 10) {
-                    ProgressView().controlSize(.large)
+                    ProgressView()
                     Text("Connecting to the camera…").foregroundStyle(.secondary)
                 }
             case .failed(let why):
-                VStack(spacing: 14) {
-                    Image(systemName: "video.slash").font(.system(size: 34)).foregroundStyle(.secondary)
-                    Text(why).multilineTextAlignment(.center).frame(maxWidth: 440).fixedSize(horizontal: false, vertical: true)
+                Color.black.opacity(0.72)
+                VStack(spacing: 12) {
+                    Image(systemName: "video.slash").font(.system(size: 28)).foregroundStyle(.secondary)
+                    Text(why).multilineTextAlignment(.center).frame(maxWidth: 420).fixedSize(horizontal: false, vertical: true)
                     Button("Try Again") { connect() }.buttonStyle(.glassProminent).tint(Theme.accent).foregroundStyle(Theme.onAccent)
                 }
-                .padding(24)
-            case .live:
+                .padding(20)
+            case .live, .reconnecting:
                 EmptyView()
             }
         }
-        .frame(minWidth: 480, minHeight: 300)
-        .navigationTitle("Printer Camera")
-        .navigationSubtitle(camera.state == .live ? camera.source : "")
-        .toolbar {
-            ToolbarItemGroup {
-                Toggle(isOn: Binding(get: { p.status.chamberLight }, set: { p.setLight($0) })) {
-                    Label("Chamber Light", systemImage: p.status.chamberLight ? "lightbulb.fill" : "lightbulb")
+        .aspectRatio(camera.state == .live || camera.state == .reconnecting ? camera.videoSize : CGSize(width: 16, height: 9), contentMode: .fit)
+        .clipShape(.rect(cornerRadius: 16))
+        .overlay(alignment: .topLeading) {
+            if camera.state == .reconnecting {
+                Label("Reconnecting…", systemImage: "arrow.triangle.2.circlepath")
+                    .font(.caption.weight(.semibold)).foregroundStyle(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(10)
+            } else if camera.state == .live {
+                Label("Live", systemImage: "circle.fill")
+                    .font(.caption.weight(.semibold)).symbolRenderingMode(.multicolor)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(10)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            HStack(spacing: 6) {
+                Button { p.setLight(!p.status.chamberLight) } label: {
+                    Image(systemName: p.status.chamberLight ? "lightbulb.fill" : "lightbulb")
                 }
                 .disabled(p.connection != .connected)
-                .help("Chamber light")
-                Button { connect() } label: { Label("Reconnect", systemImage: "arrow.clockwise") }
+                .help(p.status.chamberLight ? "Turn the chamber light off" : "Turn the chamber light on")
+                Button { connect() } label: { Image(systemName: "arrow.clockwise") }
                     .help("Reconnect to the camera")
+                Button { app.showCamera = false } label: { Image(systemName: "xmark") }
+                    .help("Hide the camera")
             }
+            .buttonStyle(.glass)
+            .foregroundStyle(.white)
+            .padding(10)
         }
         .onAppear { connect() }
         .onDisappear { camera.stop() }
@@ -588,14 +673,5 @@ struct CameraWindow: View {
 
     private func connect() {
         camera.start(ip: Settings.printerIP, code: app.printer.accessCode)
-    }
-}
-
-/// Menu item and buttons that open the camera window.
-struct WatchCameraButton: View {
-    @Environment(\.openWindow) private var openWindow
-    var title = "Watch Camera"
-    var body: some View {
-        Button(title) { openWindow(id: "camera") }
     }
 }
