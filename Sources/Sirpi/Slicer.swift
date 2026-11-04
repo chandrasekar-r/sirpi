@@ -12,6 +12,8 @@ struct SliceOptions: Equatable {
     var infill: Int = 15
     var wallLoops: Int = 2
     var brim: Bool = false
+    /// Slice each colour with the preset for the spool loaded in its AMS slot; otherwise `filament` for all.
+    var filamentFromAMS: Bool = true
     /// Preset values changed by print-check fixes, by Bambu Studio key.
     var processOverrides: [String: String] = [:]
     var filamentOverrides: [String: String] = [:]
@@ -37,6 +39,7 @@ struct SliceFilament {
     var hex: String
     var slot: String        // "tray:<id>" for an AMS/external tray, "v:<n>" for an unassigned colour
     var type: String?       // filament type from the AMS tray (PLA, PETG…) when known
+    var tray: AMSTray? = nil
 }
 
 struct FilamentUse: Codable, Hashable {
@@ -96,10 +99,43 @@ final class Slicer {
             }.sorted()
         }
         processes = list("process")
+        presetsByID = nil
         filaments = list("filament").sorted { a, b in
             let pa = a.hasPrefix("Bambu PLA"), pb = b.hasPrefix("Bambu PLA")
             return pa != pb ? pa : a < b
         }
+    }
+
+    /// Bambu filament ID ("GFA00") → preset name for this printer and nozzle, built on first use.
+    private var presetsByID: [String: String]?
+
+    private func presetIndex() -> [String: String] {
+        if let p = presetsByID { return p }
+        var map: [String: String] = [:]
+        for name in filaments {
+            guard let flat = try? flatten(kind: "filament", name: name), let id = flat["filament_id"] as? String, !id.isEmpty else { continue }
+            // Prefer the plain preset over variants for the same ID ("… @BBL P2S" over "… @BBL P2S 0.2 nozzle").
+            if let have = map[id], have.count <= name.count { continue }
+            map[id] = name
+        }
+        presetsByID = map
+        return map
+    }
+
+    /// The preset for a loaded spool: by its exact filament ID, then by product name ("PETG HF"), then by material.
+    func preset(for tray: AMSTray?, type: String?, fallback: String) -> String {
+        if let id = tray?.filamentId, let hit = presetIndex()[id] { return hit }
+        if let sub = tray?.subBrand?.uppercased(), !sub.isEmpty {
+            for brand in ["BAMBU ", "GENERIC "] {
+                if let hit = filaments.first(where: { $0.uppercased().hasPrefix(brand + sub + " @BBL") }) { return hit }
+            }
+        }
+        return preset(forType: type ?? tray?.type, fallback: fallback)
+    }
+
+    /// What `slice` will use for one colour, for showing in the inspector.
+    func preset(for part: SliceFilament, options o: SliceOptions) -> String {
+        o.filamentFromAMS ? preset(for: part.tray, type: part.type, fallback: o.filament) : o.filament
     }
 
     /// Picks a preset matching an AMS tray's material, falling back to the user's chosen preset.
@@ -196,8 +232,17 @@ final class Slicer {
         var filamentFiles: [String] = []
         var objects: [[String: Any]] = []
         for (i, part) in parts.enumerated() {
-            var f = try flatten(kind: "filament", name: preset(forType: part.type, fallback: o.filament))
+            let presetName = preset(for: part, options: o)
+            var f = try flatten(kind: "filament", name: presetName)
             f["filament_colour"] = [part.hex]
+            // Third-party spools carry the temperature range set on the printer; keep the generic preset inside it.
+            if o.filamentFromAMS, let t = part.tray, let lo = t.tempMin, let hi = t.tempMax, lo > 0, hi >= lo,
+               !presetName.hasPrefix("Bambu ") {
+                for key in ["nozzle_temperature", "nozzle_temperature_initial_layer"] {
+                    let current = (f[key] as? [Any])?.first.flatMap { Int("\($0)") } ?? Int("\(f[key] ?? "")") ?? (lo + hi) / 2
+                    f[key] = Self.typed(String(min(hi, max(lo, current))), like: f[key])
+                }
+            }
             for (k, v) in o.filamentOverrides { f[k] = Self.typed(v, like: f[k]) }
             filamentFiles.append(try write(f, "filament_\(i + 1).json").path)
             objects.append(["path": part.stl.path, "count": 1, "filaments": [i + 1], "assemble_index": [1],

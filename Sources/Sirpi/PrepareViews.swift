@@ -273,7 +273,7 @@ struct PrepareInspector: View {
                         if let miss = prep.unmatched.first {
                             Text("No loaded filament is close to \(miss.hex). That part prints in the matched slot; load a closer colour to keep it.")
                                 .foregroundStyle(.secondary).font(.callout).fixedSize(horizontal: false, vertical: true)
-                        } else if app.printer.status.trays.isEmpty {
+                        } else if app.printer.knownTrays.isEmpty {
                             Text(prep.multicolor ? "Printer offline: each colour becomes its own filament. You pick AMS slots when you print." : "Colours are matched to your AMS once the printer is connected.")
                                 .foregroundStyle(.secondary).font(.callout).fixedSize(horizontal: false, vertical: true)
                         }
@@ -296,7 +296,7 @@ struct PrepareInspector: View {
     }
 
     private var maxSlots: Int {
-        let n = app.printer.status.trays.filter { !$0.isExternal }.count
+        let n = app.printer.knownTrays.filter { !$0.isExternal }.count
         return n > 0 ? n : 8
     }
 
@@ -390,9 +390,28 @@ struct SliceInspector: View {
                             }.labelsHidden().fixedSize()
                         }
                         LabeledContent("Material") {
-                            Picker("", selection: $prep.options.filament) {
+                            Picker("", selection: Binding(
+                                get: { prep.options.filamentFromAMS && hasAMS ? "__ams" : prep.options.filament },
+                                set: { v in
+                                    if v == "__ams" { prep.options.filamentFromAMS = true }
+                                    else { prep.options.filamentFromAMS = false; prep.options.filament = v }
+                                })) {
+                                if hasAMS { Text("Loaded in AMS").tag("__ams"); Divider() }
                                 ForEach(app.slicer.filaments, id: \.self) { Text($0.replacingOccurrences(of: " @BBL P2S", with: "")).tag($0) }
                             }.labelsHidden().fixedSize()
+                        }
+                        if prep.options.filamentFromAMS && hasAMS && !amsPresets.isEmpty {
+                            VStack(alignment: .leading, spacing: 4) {
+                                ForEach(amsPresets, id: \.0) { label, preset, hex in
+                                    HStack(spacing: 6) {
+                                        Swatch(hex: hex)
+                                        Text(label).foregroundStyle(.secondary)
+                                        Spacer()
+                                        Text(preset).lineLimit(1).truncationMode(.middle)
+                                    }
+                                    .font(.callout)
+                                }
+                            }
                         }
                         LabeledContent("Supports") {
                             Picker("", selection: Binding(get: { prep.options.supportMode },
@@ -433,6 +452,18 @@ struct SliceInspector: View {
                     }
                 }
             }
+        }
+    }
+
+    private var hasAMS: Bool { !app.printer.knownTrays.isEmpty }
+
+    /// The preset each sliced colour uses, read from the spool in its AMS slot.
+    private var amsPresets: [(String, String, String)] {
+        let trays = app.printer.knownTrays
+        return (app.prep.result?.filaments ?? []).compactMap { f in
+            guard f.slot.hasPrefix("tray:"), let id = Int(f.slot.dropFirst(5)), let t = trays.first(where: { $0.id == id }) else { return nil }
+            let preset = app.slicer.preset(for: t, type: t.type, fallback: app.prep.options.filament)
+            return (t.label, preset.replacingOccurrences(of: " @BBL P2S", with: ""), f.hex)
         }
     }
 
@@ -481,8 +512,8 @@ struct SliceInspector: View {
     }
 
     private func slotLabel(_ f: FilamentUse, index: Int) -> String {
-        if f.slot.hasPrefix("tray:"), let id = Int(f.slot.dropFirst(5)), let t = app.printer.status.trays.first(where: { $0.id == id }) {
-            return "\(t.label) · \(t.type)"
+        if f.slot.hasPrefix("tray:"), let id = Int(f.slot.dropFirst(5)), let t = app.printer.knownTrays.first(where: { $0.id == id }) {
+            return "\(t.label) · \(t.name)"
         }
         return "Filament \(index + 1) · \(f.type)"
     }
@@ -531,11 +562,15 @@ struct PrintSheet: View {
                         Text("Filament \(i + 1)").frame(width: 80, alignment: .leading)
                         Picker("", selection: Binding(get: { mapping[i] ?? defaultTray(f, i, fils.count) }, set: { mapping[i] = $0 })) {
                             if fils.count == 1 { Text("External spool").tag(-1) }
-                            ForEach(trays) { t in Text("\(t.label) · \(t.type)").tag(t.id) }
+                            ForEach(trays) { t in Text("\(t.label) · \(t.name)").tag(t.id) }
                         }
                         .labelsHidden()
                         Swatch(hex: trays.first { $0.id == (mapping[i] ?? defaultTray(f, i, fils.count)) }?.colorHex ?? "333333")
                     }
+                }
+                ForEach(mismatches(fils), id: \.self) { m in
+                    Label(m, systemImage: "exclamationmark.triangle").foregroundStyle(Theme.warning)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if fils.count > 1 && trays.count < fils.count {
                     Label("This print needs \(fils.count) AMS slots; the printer reports \(trays.count).", systemImage: "exclamationmark.triangle")
@@ -569,6 +604,16 @@ struct PrintSheet: View {
         }
         .padding(24)
         .frame(width: 460)
+    }
+
+    /// Slots whose spool is a different material than the file was sliced for (the spool was swapped since).
+    private func mismatches(_ fils: [FilamentUse]) -> [String] {
+        fils.enumerated().compactMap { i, f in
+            let id = mapping[i] ?? defaultTray(f, i, fils.count)
+            guard let t = app.printer.status.trays.first(where: { $0.id == id }),
+                  t.type.uppercased() != f.type.uppercased() else { return nil }
+            return "\(t.label) holds \(t.name), but filament \(i + 1) was sliced for \(f.type). Slice again so temperatures and speeds match."
+        }
     }
 
     private func defaultTray(_ f: FilamentUse, _ i: Int, _ count: Int) -> Int {

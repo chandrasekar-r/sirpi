@@ -242,9 +242,9 @@ final class AppModel {
         var s = "Target printer: Bambu Lab \(p.id), build volume \(p.volumeText), \(Settings.nozzle) mm nozzle. "
         s += "The finished object must fit inside the build volume with a 5 mm margin; if the requested size would not fit, "
         s += "scale it down to fit and say so. Keep walls at least \(String(format: "%.1f", max(2.0, (Double(Settings.nozzle) ?? 0.4) * 4))) mm thick."
-        let trays = printer.status.trays.filter { !$0.isExternal }
+        let trays = printer.knownTrays.filter { !$0.isExternal }
         if !trays.isEmpty {
-            let list = trays.map { "\($0.type) #\($0.colorHex)" }.joined(separator: ", ")
+            let list = trays.map { "\($0.name) #\($0.colorHex)" }.joined(separator: ", ")
             s += " Loaded filaments: \(list). Colour the parts using only these filament colours."
         }
         return s
@@ -452,8 +452,8 @@ final class AppModel {
     }
 
     func pushPalette() {
-        let trays = printer.status.trays.filter { !$0.isExternal }
-        let slots = trays.map { ["key": "tray:\($0.id)", "hex": "#" + $0.colorHex, "label": "\($0.label) · \($0.type)"] }
+        let trays = printer.knownTrays.filter { !$0.isExternal }
+        let slots = trays.map { ["key": "tray:\($0.id)", "hex": "#" + $0.colorHex, "label": "\($0.label) · \($0.name)"] }
         if let data = try? JSONSerialization.data(withJSONObject: slots), let json = String(data: data, encoding: .utf8) {
             prep.push("window.prep.setPalette(\(json))")
         }
@@ -468,12 +468,12 @@ final class AppModel {
 
     private func writeFilaments(_ fils: [ExportedFilament], to dir: URL) throws -> [SliceFilament] {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let trays = printer.status.trays
+        let trays = printer.knownTrays
         return try fils.enumerated().map { i, f in
             let url = dir.appendingPathComponent("part_\(i + 1).stl")
             try f.data.write(to: url)
-            let type = f.slot.hasPrefix("tray:") ? trays.first { "tray:\($0.id)" == f.slot }?.type : nil
-            return SliceFilament(stl: url, hex: f.hex, slot: f.slot, type: type)
+            let tray = f.slot.hasPrefix("tray:") ? trays.first { "tray:\($0.id)" == f.slot } : nil
+            return SliceFilament(stl: url, hex: f.hex, slot: f.slot, type: tray?.type, tray: tray)
         }
     }
 
@@ -486,9 +486,16 @@ final class AppModel {
         prep.busy = prep.repair ? "Repairing mesh…" : "Exporting STL…"
         defer { prep.busy = nil }
         do {
-            let (fils, report) = try await prep.export()
+            var (fils, report) = try await prep.export()
             prep.lastReport = report
             guard !fils.isEmpty else { throw ForgeError("Nothing to print: no parts selected.") }
+            // Check every STL for holes, flipped faces and stray faces, and repair them before Bambu Studio sees them.
+            prep.busy = "Checking the STL files…"
+            tasks.update(task, detail: "Checking the STL files for holes and flipped faces")
+            let raw = fils.map(\.data)
+            let checked = await Task.detached(priority: .userInitiated) { raw.map { MeshRepair.repair($0) } }.value
+            var health = MeshHealth()
+            for i in fils.indices { fils[i].data = checked[i].data; health.add(checked[i].health) }
             let parts = try writeFilaments(fils, to: a.dir.appendingPathComponent("print", isDirectory: true))
             library.write(fils.count == 1 ? fils[0].data : combinedSTL(fils.map(\.data)), to: a.stlURL)
             prep.busy = "Checking overhangs…"
@@ -502,7 +509,7 @@ final class AppModel {
             Slicer.save(r, for: a)
             prep.result = r
             prep.busy = "Checking the slice…"
-            await runPrintCheck(a, mesh: mesh, options: options, result: r)
+            await runPrintCheck(a, mesh: mesh, health: health, passthrough: report.passthroughParts, options: options, result: r)
             library.touch()
             loadGcodePreview(a)
             tasks.finish(task, success: true, title: "\(a.shortTitle) sliced",
@@ -542,7 +549,7 @@ final class AppModel {
     // MARK: print check
 
     /// Predicts print problems from the model and the G-code, and saves the report beside the slice.
-    func runPrintCheck(_ a: Asset, mesh: MeshStats?, options: SliceOptions, result: SliceResult) async {
+    func runPrintCheck(_ a: Asset, mesh: MeshStats?, health: MeshHealth, passthrough: Int, options: SliceOptions, result: SliceResult) async {
         let url = a.gcodeURL
         let gcode = await Task.detached(priority: .userInitiated) { GcodeCheck.analyse(url) }.value
         let preset = result.filaments?.count ?? 0 > 1 ? options.filament : (gcode?.settings["filament_settings_id"]
@@ -551,7 +558,10 @@ final class AppModel {
         let ctx = PrintRules.Context(mesh: mesh, gcode: gcode, material: material, filamentPreset: preset,
                                      supportMode: options.supportMode, supportsOn: options.supports, brim: options.brim,
                                      noSupportsWanted: a.fullRequest.contains("Design to print without supports"))
-        let report = PrintReport(findings: PrintRules.findings(ctx), mesh: mesh, gcode: gcode, material: material, checkedAt: Date())
+        var findings = PrintRules.findings(ctx)
+        if let f = PrintRules.stlFinding(health, passthrough: passthrough, repairOn: prep.repair) { findings.insert(f, at: 0) }
+        let report = PrintReport(findings: findings.sorted { $0.severity > $1.severity }, mesh: mesh, gcode: gcode,
+                                 material: material, checkedAt: Date(), health: health)
         PrintCheckStore.save(report, for: a)
         if prep.assetID == a.id { prep.check = report }
     }
@@ -569,6 +579,7 @@ final class AppModel {
                 prep.options.supportMode = v
                 UserDefaults.standard.set(v, forKey: SliceOptions.supportModeKey)
             case "brim": prep.options.brim = v == "1"
+            case "repair": prep.repair = v == "1"; prep.pushRepair(); try? await Task.sleep(for: .milliseconds(300))
             case "wallLoops": if let n = Int(v) { prep.options.wallLoops = n }
             case "infill": if let n = Int(v) { prep.options.infill = n }
             default:
@@ -917,7 +928,7 @@ struct RootView: View {
         .sheet(isPresented: $app.showPrintSheet) { PrintSheet() }
         .sheet(isPresented: $app.showSimReady) { SimReadyBrowser(intoScene: app.simReadyIntoScene) }
         .sheet(item: $app.turntableAsset) { TurntableSheet(asset: $0) }
-        .onChange(of: app.printer.status.trays) { _, _ in app.pushPalette() }
+        .onChange(of: app.printer.knownTrays) { _, _ in app.pushPalette() }
         .onChange(of: app.generator.phase) { _, p in
             if case .failed = p { app.generationEnded() }
         }

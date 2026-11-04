@@ -154,6 +154,10 @@ struct PrintCheckSection: View {
         let prep = app.prep
         InspectorSection(title: "Print check", trailing: trailing) {
             if let report = prep.check {
+                if let h = report.health, h.watertight, !h.repaired {
+                    Label("STL checked: watertight, \(h.triangles.formatted()) triangles", systemImage: "checkmark.seal")
+                        .font(.callout).foregroundStyle(.secondary)
+                }
                 if report.findings.isEmpty {
                     Label("No problems expected", systemImage: "checkmark.circle").foregroundStyle(Theme.accent)
                 }

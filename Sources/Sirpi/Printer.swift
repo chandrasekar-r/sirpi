@@ -136,13 +136,20 @@ final class MQTTClient: @unchecked Sendable {
 
 // MARK: - Printer status model
 
-struct AMSTray: Identifiable, Hashable {
+struct AMSTray: Identifiable, Hashable, Codable {
     var id: Int            // global slot index (ams * 4 + tray), 254 = external spool
     var amsId: Int
     var slotId: Int
     var type: String
     var colorHex: String
     var remain: Int?
+    /// Bambu filament ID from the spool's RFID tag or the slot setting, e.g. "GFA00" (Bambu PLA Basic).
+    var filamentId: String? = nil
+    /// Product name shown on the printer, e.g. "PLA Basic" or "PETG HF".
+    var subBrand: String? = nil
+    var tempMin: Int? = nil
+    var tempMax: Int? = nil
+    var name: String { subBrand.flatMap { $0.isEmpty ? nil : $0 } ?? type }
     var isExternal: Bool { id == 254 }
     var label: String { isExternal ? "External spool" : "AMS \(amsId + 1) · Slot \(slotId + 1)" }
 }
@@ -260,6 +267,30 @@ final class PrinterManager {
         }
     }
 
+    private static func text(_ v: Any?) -> String? {
+        guard let s = v as? String, !s.isEmpty else { return nil }
+        return s
+    }
+    private static func int(_ v: Any?) -> Int? {
+        if let i = v as? Int { return i }
+        if let s = v as? String { return Int(s) }
+        return nil
+    }
+
+    // MARK: last known AMS
+
+    private static let traysKey = "lastKnownTrays"
+    private static func saveTrays(_ t: [AMSTray]) {
+        if let d = try? JSONEncoder().encode(t) { UserDefaults.standard.set(d, forKey: traysKey) }
+    }
+    /// The AMS as last reported, so slicing still uses the loaded filaments while the printer is off.
+    static var lastKnownTrays: [AMSTray] {
+        guard let d = UserDefaults.standard.data(forKey: traysKey) else { return [] }
+        return (try? JSONDecoder().decode([AMSTray].self, from: d)) ?? []
+    }
+    /// Live trays when connected, otherwise the last ones seen.
+    var knownTrays: [AMSTray] { status.trays.isEmpty ? Self.lastKnownTrays : status.trays }
+
     private static func merge(_ a: [String: Any], _ b: [String: Any]) -> [String: Any] {
         var out = a
         for (k, v) in b {
@@ -327,15 +358,20 @@ final class PrinterManager {
                     guard let type = t["tray_type"] as? String, !type.isEmpty else { continue }
                     trays.append(AMSTray(id: aid * 4 + tid, amsId: aid, slotId: tid, type: type,
                                          colorHex: String(((t["tray_color"] as? String) ?? "888888FF").prefix(6)),
-                                         remain: t["remain"] as? Int))
+                                         remain: t["remain"] as? Int, filamentId: Self.text(t["tray_info_idx"]),
+                                         subBrand: Self.text(t["tray_sub_brands"]),
+                                         tempMin: Self.int(t["nozzle_temp_min"]), tempMax: Self.int(t["nozzle_temp_max"])))
                 }
             }
         }
         if let vt = p["vt_tray"] as? [String: Any], let type = vt["tray_type"] as? String, !type.isEmpty {
             trays.append(AMSTray(id: 254, amsId: 255, slotId: 0, type: type,
-                                 colorHex: String(((vt["tray_color"] as? String) ?? "888888FF").prefix(6)), remain: nil))
+                                 colorHex: String(((vt["tray_color"] as? String) ?? "888888FF").prefix(6)), remain: nil,
+                                 filamentId: Self.text(vt["tray_info_idx"]), subBrand: Self.text(vt["tray_sub_brands"]),
+                                 tempMin: Self.int(vt["nozzle_temp_min"]), tempMax: Self.int(vt["nozzle_temp_max"])))
         }
         s.trays = trays
+        if !trays.isEmpty && trays != status.trays { Self.saveTrays(trays) }
         let was = status.gcodeState
         status = s
         if ["RUNNING", "PAUSE", "PREPARE"].contains(was), ["FINISH", "FAILED"].contains(s.gcodeState) {

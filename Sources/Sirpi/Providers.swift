@@ -512,7 +512,17 @@ enum CLIRunner {
             if image != nil { a += ["-f", imagePath.path] }
             return (a + [user], nil)
         case "kimi":
-            var a = ["-p", user, "--output-format", "stream-json"]
+            // A one-off agent with no tools and Sirpi's own system prompt. Without it Kimi sends every MCP tool the
+            // user has installed (hundreds) and its 38k-character coding-agent prompt with each request, which can
+            // take minutes before the first word.
+            let agent = workDir.appendingPathComponent("sirpi-agent.md")
+            let header = "---\nname: sirpi-writer\ndescription: Writes one complete answer for Sirpi without tools\ntools: []\nsubagents: []\n---\n\n"
+            try? (header + system).write(to: agent, atomically: true, encoding: .utf8)
+            let turns = messages.filter { $0["role"] != "system" }
+            let body = turns.count == 1 ? (turns[0]["content"] ?? "") : turns.map { m in
+                m["role"] == "assistant" ? "Your previous file:\n" + (m["content"] ?? "") : "Request: " + (m["content"] ?? "")
+            }.joined(separator: "\n\n")
+            var a = ["-p", body, "--output-format", "stream-json", "--agent-file", agent.path]
             if !model.isEmpty { a += ["-m", model] }
             return (a, nil)
         case "pi":

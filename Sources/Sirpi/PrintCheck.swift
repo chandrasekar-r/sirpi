@@ -5,10 +5,11 @@ import Foundation
 /// One thing that may go wrong, why, and what fixes it.
 struct PrintFinding: Codable, Identifiable, Hashable {
     enum Defect: String, Codable, CaseIterable {
-        case supports, overhang, bridging, warping, detaching, collapsing, underExtrusion, stringing, gloss, cracking, belt
+        case mesh, supports, overhang, bridging, warping, detaching, collapsing, underExtrusion, stringing, gloss, cracking, belt
 
         var name: String {
             switch self {
+            case .mesh: "STL file"
             case .supports: "Supports"
             case .overhang: "Overhang quality"
             case .bridging: "Bridging"
@@ -55,6 +56,7 @@ struct PrintReport: Codable {
     var material: String
     var checkedAt: Date
     var aiSummary: String? = nil
+    var health: MeshHealth? = nil
 
     var worst: PrintFinding.Severity? { findings.map(\.severity).max() }
 }
@@ -554,6 +556,23 @@ enum PrintRules {
                                     fixes: [PrintFix(label: "Slower outer walls", settings: ["p.outer_wall_speed": "120"])]))
         }
         return out.sorted { $0.severity > $1.severity }
+    }
+
+    /// What the STL check fixed, or what is still broken.
+    static func stlFinding(_ h: MeshHealth, passthrough: Int, repairOn: Bool) -> PrintFinding? {
+        if !h.watertight {
+            var detail = "After repair, \(h.openEdges) edge\(h.openEdges == 1 ? " is" : "s are") still open and \(h.nonManifoldEdges) \(h.nonManifoldEdges == 1 ? "is" : "are") shared by more than two faces."
+            detail += " Bambu Studio fills small gaps itself, but missing walls or layers can still show up in the slice."
+            if passthrough > 0 { detail += " \(passthrough) part\(passthrough == 1 ? "" : "s") could not be merged into a solid and \(passthrough == 1 ? "was" : "were") passed through as they are." }
+            let fixes = repairOn ? [PrintFix(label: "Rebuild as one solid", refine: "Print fix: the exported mesh is not watertight (open or shared edges). Build every part as a closed solid and let parts overlap so they fuse; do not leave open shapes such as planes or single-sided surfaces.")]
+                                 : [PrintFix(label: "Turn on Repair for printing", settings: ["repair": "1"])]
+            return PrintFinding(id: "mesh", defect: .mesh, severity: .warn, title: "The STL still has holes", detail: detail, fixes: fixes)
+        }
+        if h.repaired {
+            return PrintFinding(id: "mesh", defect: .mesh, severity: .info, title: "STL repaired",
+                                detail: "Sirpi " + h.fixesText + ". The model is now watertight; the repaired files are the ones sliced and exported.")
+        }
+        return nil
     }
 
     /// The refinement request for the model that wrote the asset, in its own terms (Y up, millimetres).
