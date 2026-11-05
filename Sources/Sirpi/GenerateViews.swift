@@ -412,7 +412,7 @@ struct ModelInspector: View {
             }
             .padding(16)
             if provider.kind == .local {
-                InspectorSection(title: "Qwen3.5 4B GLB 3D Coder") {
+                InspectorSection(title: Self.model == "mlx-tuned-4bit" ? "3D Coder · Sirpi fine-tune" : "Qwen3.5 4B GLB 3D Coder") {
                     let _ = app.server.activeModel
                     Text(isNative ? "Runs inside Sirpi with MLX." : "Runs on this Mac with llama.cpp.")
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -475,6 +475,7 @@ extension ModelInspector {
     }
     static var weights: String {
         switch model {
+        case "mlx-tuned-4bit": "MLX 4-bit · 2.4 GB"
         case "mlx-4bit": "MLX 4-bit · 2.2 GB"
         case "mlx-6bit": "MLX 6-bit · 3.2 GB"
         default: model.contains("Q4") ? "Q4_K_M · 2.6 GB" : "Q8_0 · 4.2 GB"
@@ -482,12 +483,12 @@ extension ModelInspector {
     }
     static var speed: String {
         switch model {
-        case "mlx-4bit": "about 83 tok/s"
+        case "mlx-4bit", "mlx-tuned-4bit": "about 83 tok/s"
         case "mlx-6bit": "about 61 tok/s"
         default: model.contains("Q4") ? "about 58 tok/s" : "about 43 tok/s"
         }
     }
-    static var typical: String { model == "mlx-4bit" ? "2 to 4 min" : model == "mlx-6bit" ? "3 to 5 min" : "5 to 8 min" }
+    static var typical: String { model == "mlx-tuned-4bit" ? "1 to 3 min" : model == "mlx-4bit" ? "2 to 4 min" : model == "mlx-6bit" ? "3 to 5 min" : "5 to 8 min" }
 }
 
 struct GeneratingInspector: View {

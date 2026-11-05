@@ -86,6 +86,10 @@ final class NativeEngine {
                         maxTokens: maxTokens, temperature: Float(temperature), topP: 0.95, topK: 40, minP: 0.0)
                     let events = try await c.generate(input: LMInput(tokens: MLXArray(tokens)), parameters: params)
                     var inThink = thinking
+                    // The fine-tune often skips planning on follow-up turns and starts the file straight after
+                    // <think>, never closing it. Until the first few characters arrive, hold them; if they open
+                    // a file, it is the answer, not reasoning.
+                    var decided = !thinking
                     var pending = ""            // undecided text (may hold a partial </think>)
                     var out = "", outTokens = 0 // batch for the current section
                     var lastYield = Date()
@@ -102,6 +106,16 @@ final class NativeEngine {
                         }
                         guard let text = event.chunk else { continue }
                         pending += text; outTokens += 1
+                        if !decided {
+                            let head = pending.drop { $0.isWhitespace }
+                            if head.count < 9 { continue }
+                            decided = true
+                            let h = head.prefix(9).lowercased()
+                            if h.hasPrefix("```") || h.hasPrefix("<!doctype") || h.hasPrefix("<html") {
+                                inThink = false
+                                pending = String(head)
+                            }
+                        }
                         if inThink, let r = pending.range(of: "</think>") {
                             out += pending[..<r.lowerBound]
                             send()

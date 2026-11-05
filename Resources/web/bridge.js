@@ -12,8 +12,25 @@
       post({ type: 'error', message: 'Failed to load resource: ' + (e.target.src || e.target.href) });
       return;
     }
-    post({ type: 'error', message: `${e.message}${e.lineno ? ` (line ${e.lineno})` : ''}` });
+    // An error thrown inside three.js reports a line of three.js, which says nothing to the model fixing the page.
+    // Name the library file, and the page line that called into it, from the stack.
+    const here = location.href.split(/[?#]/)[0];
+    const file = (e.filename || '').split(/[?#]/)[0];
+    const elsewhere = file && file !== here;
+    const pl = elsewhere ? pageLine(e.error, here) : 0;
+    const where = e.lineno ? ` (line ${e.lineno}${elsewhere ? ` of ${file.split('/').pop()}` : ''})` : '';
+    post({ type: 'error', message: `${e.message}${where}${pl ? `, called from page line ${pl}` : ''}` });
   }, true);
+  function pageLine(err, here) {
+    const stack = String((err && err.stack) || '');
+    for (const l of stack.split('\n')) {
+      const i = l.indexOf(here);
+      if (i < 0) continue;
+      const m = l.slice(i + here.length).match(/^(?:\?[^:]*)?:(\d+):\d+/);
+      if (m) return +m[1];
+    }
+    return 0;
+  }
   window.addEventListener('unhandledrejection', (e) => {
     const r = e.reason;
     post({ type: 'error', message: 'Unhandled promise rejection: ' + (r && (r.stack || r.message) || String(r)) });

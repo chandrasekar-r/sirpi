@@ -5,11 +5,16 @@ cd "$(dirname "$0")/.."
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}"
 # xcodebuild (not `swift build`): MLX's Metal kernels are only compiled into default.metallib by Xcode's
 # build system. Needs the Metal toolchain once: xcodebuild -downloadComponent MetalToolchain
+# xcodebuild can exit non-zero on a harmless "failed with exit code 0" line, so judge the build by compile errors.
+LOG=$(mktemp)
 xcodebuild -scheme Sirpi -configuration Release -destination 'platform=macOS,arch=arm64' \
-  -derivedDataPath build/dd -skipMacroValidation -skipPackagePluginValidation -quiet build 2>&1 \
-  | grep -v -e CoreSimulator -e "^$" || true
+  -derivedDataPath build/dd -skipMacroValidation -skipPackagePluginValidation -quiet build > "$LOG" 2>&1 || true
+grep -v -e CoreSimulator -e "^$" "$LOG" || true
 BIN=build/dd/Build/Products/Release
-[[ -x "$BIN/Sirpi" ]] || { echo "build failed"; exit 1; }
+if grep -qE '\.(swift|metal|c|m):[0-9]+:[0-9]+: error:' "$LOG" || [[ ! -x "$BIN/Sirpi" ]]; then
+  rm -f "$LOG"; echo "build failed"; exit 1
+fi
+rm -f "$LOG"
 APP=build/Sirpi.app
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"

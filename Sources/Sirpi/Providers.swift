@@ -167,9 +167,9 @@ enum ProviderSettings {
         case .local: return nil
         case .cli: return CLIRunner.resolvedPath(executable(p)) == nil ? "\(executable(p)) is not installed or not on your shell PATH." : nil
         case .openAI, .anthropic:
-            if p.needsKey && apiKey(p).isEmpty { return "Add an API key for \(p.name) in Settings › Model." }
-            if p.needsAccount && account(p).isEmpty { return "Add your Cloudflare account ID in Settings › Model." }
-            if model(p).isEmpty { return "Choose a model for \(p.name) in Settings › Model." }
+            if p.needsKey && apiKey(p).isEmpty { return "Add an API key for \(p.name) in Settings › Cloud APIs." }
+            if p.needsAccount && account(p).isEmpty { return "Add your Cloudflare account ID in Settings › Cloud APIs." }
+            if model(p).isEmpty { return "Choose a model for \(p.name) in Settings › Cloud APIs." }
             return nil
         }
     }
@@ -557,7 +557,7 @@ enum CLIRunner {
             let task = Task.detached(priority: .userInitiated) {
                 let exe = ProviderSettings.executable(p)
                 guard let path = resolvedPath(exe) else {
-                    cont.finish(throwing: ForgeError("\(exe) was not found. Install it, or set its full path in Settings › Model.")); return
+                    cont.finish(throwing: ForgeError("\(exe) was not found. Install it, or set its full path in Settings › Coding Agents.")); return
                 }
                 let work = FileManager.default.temporaryDirectory.appendingPathComponent("assetforge-\(UUID().uuidString)", isDirectory: true)
                 try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)

@@ -228,6 +228,15 @@ struct RefiningViewport: View {
 
 /// An asset's versions as a conversation: what was asked, which version it made, and what is being written now.
 struct AssetConversation: View {
+    /// An example follow-up that fits the asset: printed objects get a size change, scenes and game assets a detail.
+    static func replyHint(_ purpose: String?) -> String {
+        switch AssetPurpose(rawValue: purpose ?? "") {
+        case .print: "Make it 10 mm wider and round the corners"
+        case .scene: "Add a few trees and a path to the door"
+        default: "Make it more weathered and add a small detail"
+        }
+    }
+
     @Environment(AppModel.self) private var app
     let asset: Asset
     @State private var text = ""
@@ -354,7 +363,7 @@ struct AssetConversation: View {
                     .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(focused ? Theme.accent.opacity(0.5) : Theme.hairline))
                     .overlay(alignment: .topLeading) {
                         if text.isEmpty {
-                            Text(app.pickedPart != nil ? "What should change about this part?" : "Make the scarf longer and add a small bell")
+                            Text(app.pickedPart != nil ? "What should change about this part?" : Self.replyHint(app.selectedAsset?.purpose))
                                 .foregroundStyle(.tertiary).padding(.horizontal, 11).padding(.vertical, 6)
                                 .allowsHitTesting(false)
                         }

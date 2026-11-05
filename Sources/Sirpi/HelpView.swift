@@ -111,7 +111,7 @@ struct HelpView: View {
             para("Textures default to 512 px. Choose Full only when you need the original quality; those downloads are large. The first import sets up the USD converter once.")
             para("Licence: CC-BY-4.0. You may use these assets, including commercially, if you credit NVIDIA.")
         case .providers:
-            section("On this Mac", "Sirpi's fine-tuned 3D Coder downloads on first launch (2.4 GB) and runs inside the app on the GPU. Pick other weights, or ccore's original model, in Settings › Model.")
+            section("On this Mac", "Sirpi's fine-tuned 3D Coder downloads on first launch (2.4 GB) and runs inside the app on the GPU. Pick other weights, or ccore's original model, in Settings › Local Model.")
             section("Coding agents", "Claude Code, opencode, Grok, Kimi, Cursor Agent, Codex, Gemini CLI and pi are detected automatically and use the login they already have. Pick a model for each in Settings › Coding Agents.")
             section("Cloud APIs", "Claude, OpenAI, Gemini, xAI, Cloudflare Workers AI, OpenRouter, Groq, DeepSeek and Mistral need an API key in Settings › Cloud APIs. Ollama and LM Studio run locally.")
         case .shortcuts:

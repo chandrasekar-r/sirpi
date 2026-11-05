@@ -17,7 +17,7 @@ enum KimiACP {
             let task = Task.detached(priority: .userInitiated) {
                 let exe = ProviderSettings.executable(p)
                 guard let path = CLIRunner.resolvedPath(exe) else {
-                    cont.finish(throwing: ForgeError("\(exe) was not found. Install it, or set its full path in Settings › Model.")); return
+                    cont.finish(throwing: ForgeError("\(exe) was not found. Install it, or set its full path in Settings › Coding Agents.")); return
                 }
                 let work = FileManager.default.temporaryDirectory.appendingPathComponent("assetforge-\(UUID().uuidString)", isDirectory: true)
                 let agents = work.appendingPathComponent(".kimi-code/agents", isDirectory: true)

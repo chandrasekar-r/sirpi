@@ -518,6 +518,12 @@ final class Generator {
                         onDone: @escaping (Asset) -> Void) async {
         finished = Date()
         var answer = content
+        // A model that never closed its <think> block leaves the whole file in the reasoning.
+        if mode != .continuation, Self.extractHTML(answer) == nil, !Patch.looksLikePatch(answer),
+           Self.extractHTML(reasoning) != nil || Patch.looksLikePatch(reasoning) {
+            answer = reasoning
+            content = reasoning
+        }
         if mode == .continuation {
             answer = Continuation.join(prefix, String(content.dropFirst(prefix.count)))
             content = answer
@@ -557,6 +563,20 @@ final class Generator {
 
     private func save(html: String, prompt: String, base: Asset?, refinement: String?, library: AssetLibrary,
                       onDone: @escaping (Asset) -> Void) {
+        var html = html
+        if let base {
+            // Earlier versions, newest first, for helpers a whole-file rewrite left out.
+            var earlier: [String] = [], cursor: Asset? = base
+            while let a = cursor, earlier.count < 8 {
+                if let h = try? String(contentsOf: a.htmlURL, encoding: .utf8) { earlier.append(h) }
+                cursor = library.asset(a.parentId)
+            }
+            let (fixed, restored) = HelperRestore.restore(html, from: earlier)
+            if !restored.isEmpty {
+                html = fixed
+                server?.log.append("Restored \(restored.joined(separator: ", ")) from the previous version")
+            }
+        }
         do {
             let a = try library.create(prompt: prompt, html: html, parent: base, refinement: saveLabel ?? refinement,
                                        seconds: elapsed, tokens: tokens, engine: engineLabel, reference: reference?.jpeg,

@@ -32,7 +32,7 @@ Runs a fine-tuned model on your Mac's GPU, or the coding agents and AI services 
 
 - **Point at what to change.** Turn on *Select part*, click a part of the model, and say what should change. The request names that part, its shape, colour and position, and the code that builds it, so the rest stays as it is.
 - **One conversation per asset.** Every request, error fix and version of an asset stays in one conversation. Click a version to show it; the original is never overwritten.
-- **Fast fixes.** Fixes and refinements come back as small edits to the existing code, so fixing a script error takes seconds. A generation that was stopped or cut off can be continued from where it ended.
+- **Fast fixes.** With models that can, fixes and refinements come back as small edits to the existing code, so fixing a script error takes seconds. The local model rewrites the whole file instead, and Sirpi puts back any helper function the rewrite leaves out. Script errors point at the failing line of the asset, even when the error is thrown inside three.js. A generation that was stopped or cut off can be continued from where it ended.
 - **Customise by hand.** Select objects in a scene, move, rotate and scale them with a gizmo, recolour materials, duplicate, delete, and insert assets from your library. Every change is a new version.
 - **Detail on demand.** *Smooth & add detail* subdivides meshes so curves become smooth while sharp edges stay crisp.
 
@@ -55,9 +55,11 @@ Runs a fine-tuned model on your Mac's GPU, or the coding agents and AI services 
 - **Local first.** [Sirpi's fine-tune of the 3D Coder](https://huggingface.co/Chandrasekar/Qwen3.5-4B-GLB-3D-Coder-Sirpi-MLX-4bit), based on [ccore's Qwen3.5-4B GLB 3D Coder](https://huggingface.co/ccore/Qwen3.5-4B-GLB-3D-Coder), downloads on first launch (2.4 GB) and runs inside the app on the GPU with [MLX](https://github.com/ml-explore/mlx-swift): no server, nothing leaves your Mac. Compared with the original it makes working print models far more often (16 of 20 test prompts against 11), gets sizes right four times as often, and writes half as much code, so assets finish in about half the time.
 - **Or bring your own.** Coding-agent CLIs you are already signed in to (Claude Code, opencode, Grok CLI, Kimi Code, Cursor Agent, Codex, Gemini CLI, pi) are detected automatically and use their own logins; their answers stream live. Cloud APIs (Claude, OpenAI, Gemini, xAI, Cloudflare Workers AI, OpenRouter, Groq, DeepSeek, Mistral) and local servers (Ollama, LM Studio) work with a key or URL.
 
-| Follow-up questions | Customising a scene |
+| Follow-up questions before it starts | The preview builds live while the model writes |
 |---|---|
-| ![Follow-up questions](docs/images/follow-up-questions.png) | ![Scene customiser](docs/images/customise.png) |
+| ![Follow-up questions](docs/images/follow-up-questions.png) | ![Live preview during generation](docs/images/live-preview.png) |
+| **Select a part and say what to change** | **Prepare: repair, size and AMS colours** |
+| ![Selecting a part to change](docs/images/select-part.png) | ![Prepare for print with two AMS colours](docs/images/prepare-print.png) |
 
 ## Install
 
@@ -73,12 +75,14 @@ Requirements: an Apple silicon Mac and macOS 27 or later. 16 GB of memory is eno
 
 Pick one or more:
 
-- **Local 3D Coder (free, private).** Downloaded automatically on first launch (2.4 GB), or from **Settings › Model › Downloads**. To use ccore's original model instead, the same section downloads its GGUF files, or convert it to MLX with [uv](https://docs.astral.sh/uv/) (about 4 GB to download and 20 GB free while converting):
+- **Local 3D Coder (free, private).** Downloaded automatically on first launch (2.4 GB), or from **Settings › Local Model › Downloads**. To use ccore's original model instead, the same section downloads its GGUF files, or convert it to MLX with [uv](https://docs.astral.sh/uv/) (about 4 GB to download and 20 GB free while converting):
   ```sh
   tools/model/setup_local_model.sh          # MLX 4-bit, the fastest
   tools/model/setup_local_model.sh --6bit   # also MLX 6-bit, closest to the original
   ```
-  Then choose it in **Settings › Model**.
+  Then choose it in **Settings › Local Model**.
+
+  ![Local model settings](docs/images/settings-model.png)
 - **A coding agent you already use.** Install and sign in to it once in Terminal; Sirpi finds it in **Settings › Coding Agents**.
 - **A cloud API.** Add a key in **Settings › Cloud APIs**. Keys are stored in a file only your user account can read.
 

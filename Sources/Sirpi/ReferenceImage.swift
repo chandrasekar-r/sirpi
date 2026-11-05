@@ -90,7 +90,7 @@ enum ImageDescriber {
 
     static func describe(_ image: ReferenceImage) async throws -> String {
         guard let p = describer else {
-            throw ForgeError("The local 3D Coder can't see pictures. Install Claude Code or add a Claude, OpenAI or Gemini API key in Settings › Model, and Sirpi will describe the picture for it.")
+            throw ForgeError("The local 3D Coder can't see pictures. Install Claude Code or add a Claude, OpenAI or Gemini API key in Settings › Cloud APIs, and Sirpi will describe the picture for it.")
         }
         let messages = [["role": "user", "content": instruction]]
         let stream: AsyncThrowingStream<NativeEngine.Piece, Error>

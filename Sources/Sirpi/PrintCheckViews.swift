@@ -105,7 +105,7 @@ enum PrintReview {
 
     static func review(report: PrintReport, options: SliceOptions, request: String) async throws -> Result {
         guard let p = provider else {
-            throw ForgeError("No AI model for reviews is set up. Install Claude Code or add an API key in Settings › Model.")
+            throw ForgeError("No AI model for reviews is set up. Install Claude Code, or add an API key in Settings › Cloud APIs.")
         }
         let messages = [["role": "user", "content": prompt(report: report, options: options, request: request)]]
         let stream = p.kind == .cli

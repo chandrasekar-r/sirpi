@@ -276,9 +276,29 @@ final class AppModel {
         stage = .generate
     }
 
+    /// The page lines the errors point at ("page line N", or "(line N)" for an error in the page itself), quoted
+    /// so the model sees the failing code. `offset` is the number of lines the picking script adds above the code.
+    static func quoteErrorLines(_ errors: String, in html: String, offset: Int) -> String {
+        let lines = html.components(separatedBy: "\n")
+        let re = try! NSRegularExpression(pattern: #"page line (\d+)|\(line (\d+)\)"#)
+        let ns = errors as NSString
+        var seen = Set<Int>(), out = ""
+        for m in re.matches(in: errors, range: NSRange(location: 0, length: ns.length)) {
+            let g = m.range(at: 1).location != NSNotFound ? m.range(at: 1) : m.range(at: 2)
+            guard let n = Int(ns.substring(with: g)).map({ $0 - offset }), n >= 1, n <= lines.count, seen.insert(n).inserted,
+                  seen.count <= 4 else { continue }
+            let range = max(1, n - 2)...min(lines.count, n + 2)
+            out += "\n\nCode at line \(n):\n" + range.map { ($0 == n ? "> " : "  ") + lines[$0 - 1] }.joined(separator: "\n")
+        }
+        return out
+    }
+
     func fixErrors() {
         guard selectedAsset != nil, !preview.errors.isEmpty else { return }
-        let errs = preview.errors.prefix(8).joined(separator: "\n")
+        var errs = preview.errors.prefix(8).joined(separator: "\n")
+        if let a = selectedAsset, let html = try? String(contentsOf: a.htmlURL, encoding: .utf8) {
+            errs += Self.quoteErrorLines(errs, in: html, offset: pickMode ? 1 : 0)
+        }
         refine("The page throws these JavaScript errors. Fix them without changing the asset design:\n\(errs)",
                label: "Fix \(preview.errors.count == 1 ? "the script error" : "\(preview.errors.count) script errors")")
     }
